@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
 import { applyBrushMosaic } from '@/lib/mosaic';
-import { Upload, RefreshCw, Download, Undo2, Paintbrush } from 'lucide-react';
+import { Upload, RefreshCw, Download, Undo2, Redo2, Paintbrush } from 'lucide-react';
 
 export function FaceMosaic() {
   const [isDragging, setIsDragging] = useState(false);
@@ -13,11 +13,13 @@ export function FaceMosaic() {
   const [brushSize, setBrushSize] = useState([40]);
   const [isDrawing, setIsDrawing] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const historyRef = useRef<ImageData[]>([]);
+  const redoStackRef = useRef<ImageData[]>([]);
   const lastPosRef = useRef<{ x: number; y: number } | null>(null);
 
   // Draw image to canvas when image changes
@@ -55,11 +57,14 @@ export function FaceMosaic() {
       
       // Save initial state for undo
       historyRef.current = [ctx.getImageData(0, 0, width, height)];
+      redoStackRef.current = [];
       setCanUndo(false);
+      setCanRedo(false);
     };
 
     requestAnimationFrame(drawToCanvas);
   }, [image]);
+
 
   const handleFile = useCallback((file: File) => {
     const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
@@ -142,7 +147,10 @@ export function FaceMosaic() {
     if (historyRef.current.length > 20) {
       historyRef.current.shift();
     }
+    // Clear redo stack on new action
+    redoStackRef.current = [];
     setCanUndo(true);
+    setCanRedo(false);
   };
 
   // Apply mosaic at position
@@ -209,7 +217,7 @@ export function FaceMosaic() {
     lastPosRef.current = null;
   };
 
-  const handleUndo = () => {
+  const handleUndo = useCallback(() => {
     if (historyRef.current.length <= 1) return;
     
     const canvas = canvasRef.current;
@@ -217,16 +225,64 @@ export function FaceMosaic() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Remove current state and restore previous
-    historyRef.current.pop();
-    const previousState = historyRef.current[historyRef.current.length - 1];
-    if (previousState) {
-      ctx.putImageData(previousState, 0, 0);
+    // Save current state to redo stack before undoing
+    const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    redoStackRef.current.push(currentState);
+    setCanRedo(true);
+
+    // Pop the saved "before drawing" state and restore it
+    const stateToRestore = historyRef.current.pop();
+    if (stateToRestore) {
+      ctx.putImageData(stateToRestore, 0, 0);
     }
     
     setCanUndo(historyRef.current.length > 1);
-    setStatus({ type: 'info', message: '실행 취소됨' });
-  };
+    setStatus({ type: 'info', message: '실행 취소됨 (⌘Z)' });
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Save current state to history before redoing
+    const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    historyRef.current.push(currentState);
+    setCanUndo(true);
+
+    // Pop the redo state and restore it
+    const stateToRestore = redoStackRef.current.pop();
+    if (stateToRestore) {
+      ctx.putImageData(stateToRestore, 0, 0);
+    }
+
+    setCanRedo(redoStackRef.current.length > 0);
+    setStatus({ type: 'info', message: '다시 실행됨 (⌘⇧Z)' });
+  }, []);
+
+  // Keyboard shortcut: Cmd+Z / Ctrl+Z for undo, Cmd+Shift+Z for redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        } else {
+          e.preventDefault();
+          handleUndo();
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'y') { // Windows standard redo
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleUndo, handleRedo]);
 
   const handleDownload = () => {
     const canvas = canvasRef.current;
@@ -244,7 +300,9 @@ export function FaceMosaic() {
     setImage(null);
     setStatus(null);
     historyRef.current = [];
+    redoStackRef.current = [];
     setCanUndo(false);
+    setCanRedo(false);
     
     if (canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d');
@@ -390,6 +448,15 @@ export function FaceMosaic() {
               >
                 <Undo2 className="w-4 h-4 mr-2" />
                 실행 취소
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleRedo}
+                disabled={!canRedo}
+                className="border-slate-700 hover:bg-slate-800"
+              >
+                <Redo2 className="w-4 h-4 mr-2" />
+                다시 실행
               </Button>
               <Button
                 onClick={handleDownload}
