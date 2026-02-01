@@ -1,0 +1,51 @@
+flowchart TD
+    %% === PROJECT GOALS ===
+    %% Ultimate Goal: AI 기반 이미지 처리 도구 모음 구축
+    %% Current Goal: 브러쉬 기반 수동 모자이크 도구
+    %% @lastActive: brush_mosaic
+
+    %% === START ===
+    %% @project_start [start, closed]
+    project_start("Image AI 프로젝트 시작<br/><sub>AI 기반 이미지 처리 도구<br/>웹 애플리케이션으로 구현<br/>다양한 이미지 변환 기능 제공</sub>")
+
+    %% === COMPLETED WORK ===
+    %% @nextjs_setup [ai-task, closed]
+    nextjs_setup("Next.js 프로젝트 세팅<br/><sub>TypeScript + Tailwind CSS<br/>shadcn/ui 컴포넌트 라이브러리<br/>tRPC 백엔드 API 구성</sub>")
+
+    %% @face_detection_attempt [ai-task, closed]
+    face_detection_attempt("얼굴 자동 감지 시도<br/><sub>MediaPipe Face Detection 활용<br/>작은 얼굴 감지 어려움 발견<br/>수동 모자이크로 방향 전환</sub>")
+
+    %% @brush_mosaic [ai-task, closed]
+    brush_mosaic("브러쉬 모자이크 도구<br/><sub>터치/드래그로 실시간 모자이크<br/>브러쉬 크기 조절 가능<br/>실행 취소 및 다운로드 지원</sub>")
+
+    %% === FUTURE WORK ===
+    %% @ultimate_goal [end, opened]
+    ultimate_goal("종합 이미지 처리 도구<br/><sub>다양한 AI 기반 이미지 편집<br/>배치 처리, API 제공 등<br/>확장 가능한 플랫폼 구축</sub>")
+
+    %% === CONNECTIONS ===
+    project_start --> nextjs_setup
+    nextjs_setup --> face_detection_attempt
+    face_detection_attempt --> brush_mosaic
+    brush_mosaic -.-> ultimate_goal
+
+    %% === RECENT WORK HIGHLIGHT ===
+    subgraph recent [RECENT]
+        brush_mosaic
+    end
+
+    %% === STYLES ===
+    %% Start node (teal)
+    style project_start fill:#1a1a2e,stroke:#2dd4bf,color:#5eead4,stroke-width:2px
+
+    %% Ultimate Goal (muted)
+    style ultimate_goal fill:#1a1a2e,stroke:#6b7280,color:#9ca3af,stroke-width:1px
+
+    %% Closed tasks (soft purple)
+    style nextjs_setup fill:#1a1a2e,stroke:#a78bfa,color:#c4b5fd,stroke-width:1px
+    style face_detection_attempt fill:#1a1a2e,stroke:#a78bfa,color:#c4b5fd,stroke-width:1px
+
+    %% Last active node (highlighted purple)
+    style brush_mosaic fill:#2d1f4e,stroke:#c084fc,color:#e9d5ff,stroke-width:2px
+
+    %% Recent subgraph style
+    style recent fill:transparent,stroke:#c084fc,color:#c084fc,stroke-width:2px,stroke-dasharray:5 5
