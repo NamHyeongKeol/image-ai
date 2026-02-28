@@ -2310,7 +2310,13 @@ function App() {
       }
 
       const key = event.key.toLowerCase();
-      if (key === 'z') {
+      const code = event.code;
+      const isUndoKey = code === 'KeyZ' || key === 'z';
+      const isRedoAltKey = code === 'KeyY' || key === 'y';
+      const isCopyKey = code === 'KeyC' || key === 'c';
+      const isPasteKey = code === 'KeyV' || key === 'v';
+
+      if (isUndoKey) {
         const didHandle = event.shiftKey ? handleRedo() : handleUndo();
         if (didHandle) {
           event.preventDefault();
@@ -2318,14 +2324,21 @@ function App() {
         return;
       }
 
-      if (key === 'c') {
+      if (!event.shiftKey && isRedoAltKey) {
+        if (handleRedo()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (isCopyKey) {
         if (selectedTextBox && copySelectedTextBox()) {
           event.preventDefault();
         }
         return;
       }
 
-      if (key === 'v') {
+      if (isPasteKey) {
         if (hasCopiedTextBox && pasteCopiedTextBox()) {
           event.preventDefault();
         }
@@ -2761,6 +2774,7 @@ function App() {
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      event.currentTarget.focus();
       const point = toCanvasPoint(event.clientX, event.clientY);
       const layout = layoutRef.current;
 
@@ -3001,6 +3015,8 @@ function App() {
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLCanvasElement>) => {
+      event.currentTarget.focus();
+
       if (suppressCanvasClickRef.current) {
         suppressCanvasClickRef.current = false;
         return;
@@ -3961,7 +3977,8 @@ function App() {
                 >
                   <canvas
                     ref={previewCanvasRef}
-                    className="h-auto w-full rounded-[22px]"
+                    className="h-auto w-full rounded-[22px] focus-visible:outline-none"
+                    tabIndex={0}
                     style={{
                       aspectRatio: `${currentCanvasPreset.width}/${currentCanvasPreset.height}`,
                       cursor: isPlacingTextBox ? 'crosshair' : 'default',
