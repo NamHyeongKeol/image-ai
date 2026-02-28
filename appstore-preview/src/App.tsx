@@ -29,7 +29,7 @@ type MediaKind = 'image' | 'video' | null;
 type BackgroundMode = 'solid' | 'gradient';
 type ArtifactKind = 'image' | 'video';
 type FontKey = (typeof FONT_OPTIONS)[number]['key'];
-type DragTarget = 'phone' | 'text-box';
+type DragTarget = 'phone' | 'text-box' | 'text-box-resize';
 
 interface Offset {
   x: number;
@@ -214,6 +214,7 @@ const LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
 const PROJECT_AUTOSAVE_DELAY_MS = 700;
 const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
+const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
 const PROJECT_MEDIA_DB_VERSION = 1;
 const PROJECT_MEDIA_STORE_NAME = 'project_media';
@@ -683,6 +684,16 @@ function expandRect(rect: Rect, padding: number): Rect {
   };
 }
 
+function getTextBoxResizeHandleRect(bounds: Rect) {
+  const size = TEXT_BOX_RESIZE_HANDLE_SIZE;
+  return {
+    x: bounds.x + bounds.width - size / 2,
+    y: bounds.y + bounds.height - size / 2,
+    width: size,
+    height: size,
+  };
+}
+
 function getFirstMediaFile(files: FileList | null) {
   if (!files) {
     return null;
@@ -942,6 +953,17 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
       ctx.lineWidth = textLayout.id === selectedTextBoxId ? 3 : 2;
       ctx.strokeStyle = textLayout.id === selectedTextBoxId ? 'rgba(37, 99, 235, 0.9)' : 'rgba(100, 116, 139, 0.5)';
       ctx.strokeRect(textLayout.bounds.x, textLayout.bounds.y, textLayout.bounds.width, textLayout.bounds.height);
+
+      if (textLayout.id === selectedTextBoxId) {
+        const handleRect = getTextBoxResizeHandleRect(textLayout.bounds);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(37, 99, 235, 0.95)';
+        ctx.fillRect(handleRect.x, handleRect.y, handleRect.width, handleRect.height);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(handleRect.x, handleRect.y, handleRect.width, handleRect.height);
+      }
+
       ctx.restore();
     }
   }
@@ -2533,13 +2555,15 @@ function App() {
       if (hitTextBox) {
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
-        event.currentTarget.style.cursor = 'grabbing';
+        const isResizeHandleHit =
+          selectedTextBoxId === hitTextBox.id && pointInRect(point, getTextBoxResizeHandleRect(hitTextBox.bounds));
+        event.currentTarget.style.cursor = isResizeHandleHit ? 'nwse-resize' : 'grabbing';
 
         bringTextBoxToFront(hitTextBox.id);
         setSelectedTextBoxId(hitTextBox.id);
         updateSnapGuide({ vertical: false, horizontal: false });
         dragSessionRef.current = {
-          target: 'text-box',
+          target: isResizeHandleHit ? 'text-box-resize' : 'text-box',
           pointerId: event.pointerId,
           startPoint: point,
           startPhoneOffset: phoneOffset,
@@ -2571,7 +2595,7 @@ function App() {
 
       setSelectedTextBoxId(null);
     },
-    [bringTextBoxToFront, findTopmostTextBoxAtPoint, phoneOffset, toCanvasPoint, updateSnapGuide],
+    [bringTextBoxToFront, findTopmostTextBoxAtPoint, phoneOffset, selectedTextBoxId, toCanvasPoint, updateSnapGuide],
   );
 
   const handleCanvasPointerMove = useCallback(
@@ -2652,6 +2676,22 @@ function App() {
           );
           return;
         }
+
+        if (session.target === 'text-box-resize' && session.textBoxId && session.startTextBoxSize) {
+          const nextWidth = clamp(session.startTextBoxSize.width + dx, 120, currentCanvasPreset.width * 1.25);
+          setTextBoxes((previous) =>
+            previous.map((box) =>
+              box.id === session.textBoxId
+                ? {
+                    ...box,
+                    width: nextWidth,
+                  }
+                : box,
+            ),
+          );
+          event.currentTarget.style.cursor = 'nwse-resize';
+          return;
+        }
       }
 
       updateSnapGuide({ vertical: false, horizontal: false });
@@ -2663,6 +2703,10 @@ function App() {
 
       const hitTextBox = findTopmostTextBoxAtPoint(point, layout);
       if (hitTextBox) {
+        if (selectedTextBoxId === hitTextBox.id && pointInRect(point, getTextBoxResizeHandleRect(hitTextBox.bounds))) {
+          event.currentTarget.style.cursor = 'nwse-resize';
+          return;
+        }
         event.currentTarget.style.cursor = 'grab';
         return;
       }
@@ -2686,6 +2730,7 @@ function App() {
       getCanvasSnapThreshold,
       isPlacingTextBox,
       phoneScale,
+      selectedTextBoxId,
       toCanvasPoint,
       updateSnapGuide,
     ],
@@ -2706,7 +2751,9 @@ function App() {
       setStatusMessage(
         session.target === 'phone'
           ? '아이폰 프레임 위치를 이동했습니다.'
-          : '텍스트박스 위치를 이동했습니다.',
+          : session.target === 'text-box-resize'
+            ? '텍스트박스 크기를 조정했습니다.'
+            : '텍스트박스 위치를 이동했습니다.',
       );
     }
 
