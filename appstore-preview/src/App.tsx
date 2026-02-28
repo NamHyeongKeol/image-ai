@@ -5,7 +5,19 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Download, Film, FolderOpen, Image as ImageIcon, Palette, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
+import {
+  ClipboardPaste,
+  Copy,
+  Download,
+  Film,
+  FolderOpen,
+  Image as ImageIcon,
+  Palette,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -254,6 +266,15 @@ function createNextProjectName(projects: ProjectRecord[]) {
 
 function sanitizeFileNameSegment(name: string) {
   return name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 60) || 'project';
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tag = target.tagName;
+  return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
 function parseStoredProjects(raw: string | null) {
@@ -871,6 +892,7 @@ function App() {
   const autoSaveErrorNotifiedRef = useRef(false);
   const mediaRestoreTokenRef = useRef(0);
   const loadedProjectIdRef = useRef<string | null>(null);
+  const copiedTextBoxRef = useRef<TextBoxModel | null>(null);
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
@@ -892,6 +914,7 @@ function App() {
   const [textBoxes, setTextBoxes] = useState<TextBoxModel[]>(initialProject.state.textBoxes.map((box) => ({ ...box })));
   const [selectedTextBoxId, setSelectedTextBoxId] = useState<string | null>(null);
   const [isPlacingTextBox, setIsPlacingTextBox] = useState(false);
+  const [hasCopiedTextBox, setHasCopiedTextBox] = useState(false);
 
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -1279,6 +1302,41 @@ function App() {
     );
   }, [selectedTextBoxId]);
 
+  const copySelectedTextBox = useCallback(() => {
+    if (!selectedTextBox) {
+      return false;
+    }
+
+    copiedTextBoxRef.current = { ...selectedTextBox };
+    setHasCopiedTextBox(true);
+    setStatusMessage('선택한 텍스트박스를 복사했습니다.');
+    setErrorMessage('');
+    return true;
+  }, [selectedTextBox]);
+
+  const pasteCopiedTextBox = useCallback(() => {
+    const source = copiedTextBoxRef.current;
+    if (!source) {
+      return false;
+    }
+
+    const id = `text-${nextTextBoxIdRef.current}`;
+    nextTextBoxIdRef.current += 1;
+    const duplicated: TextBoxModel = {
+      ...source,
+      id,
+      x: source.x + 24,
+      y: source.y + 24,
+    };
+
+    setTextBoxes((previous) => [...previous, duplicated]);
+    setSelectedTextBoxId(id);
+    setIsPlacingTextBox(false);
+    setStatusMessage('텍스트박스를 붙여넣었습니다.');
+    setErrorMessage('');
+    return true;
+  }, []);
+
   const drawCurrentFrame = useCallback(() => {
     const canvas = previewCanvasRef.current;
     if (!canvas) {
@@ -1361,6 +1419,37 @@ function App() {
       setSelectedTextBoxId(null);
     }
   }, [selectedTextBoxId, textBoxes]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+
+      if ((!event.metaKey && !event.ctrlKey) || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 'c') {
+        if (selectedTextBox && copySelectedTextBox()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (key === 'v') {
+        if (hasCopiedTextBox && pasteCopiedTextBox()) {
+          event.preventDefault();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [copySelectedTextBox, hasCopiedTextBox, pasteCopiedTextBox, selectedTextBox]);
 
   useEffect(() => {
     if (loadedProjectIdRef.current === currentProjectId) {
@@ -2266,6 +2355,14 @@ function App() {
                   <Button type="button" variant={isPlacingTextBox ? 'default' : 'secondary'} onClick={handleToggleTextPlacement}>
                     <Plus className="h-4 w-4" />
                     {isPlacingTextBox ? '배치 취소' : '텍스트박스 추가(클릭 배치)'}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={copySelectedTextBox} disabled={!selectedTextBox}>
+                    <Copy className="h-4 w-4" />
+                    복사
+                  </Button>
+                  <Button type="button" variant="outline" onClick={pasteCopiedTextBox} disabled={!hasCopiedTextBox}>
+                    <ClipboardPaste className="h-4 w-4" />
+                    붙여넣기
                   </Button>
                   <Button type="button" variant="outline" onClick={handleDeleteSelectedTextBox} disabled={!selectedTextBox}>
                     <Trash2 className="h-4 w-4" />
