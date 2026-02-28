@@ -95,6 +95,7 @@ interface CanvasExportArtifact {
 }
 
 interface CanvasDesignState {
+  canvasPresetId: string;
   backgroundMode: BackgroundMode;
   backgroundPrimary: string;
   backgroundSecondary: string;
@@ -172,10 +173,25 @@ interface DragSession {
   moved: boolean;
 }
 
-const CANVAS_PRESET = { label: '886 x 1920 (기본)', width: 886, height: 1920 } as const;
+const CANVAS_PRESETS = [
+  { id: '886x1920', label: '886 x 1920 (기본)', width: 886, height: 1920 },
+  { id: '1260x2736', label: '1260 x 2736', width: 1260, height: 2736 },
+  { id: '1320x2868', label: '1320 x 2868', width: 1320, height: 2868 },
+  { id: '1290x2796', label: '1290 x 2796', width: 1290, height: 2796 },
+  { id: '1242x2688', label: '1242 x 2688', width: 1242, height: 2688 },
+  { id: '1284x2778', label: '1284 x 2778', width: 1284, height: 2778 },
+  { id: '1206x2622', label: '1206 x 2622', width: 1206, height: 2622 },
+  { id: '1179x2556', label: '1179 x 2556', width: 1179, height: 2556 },
+  { id: '1125x2436', label: '1125 x 2436', width: 1125, height: 2436 },
+  { id: '1080x2340', label: '1080 x 2340', width: 1080, height: 2340 },
+  { id: '1170x2532', label: '1170 x 2532', width: 1170, height: 2532 },
+] as const;
 
-const BASE_PHONE_WIDTH = CANVAS_PRESET.width - 220;
-const BASE_PHONE_HEIGHT = 1400;
+const DEFAULT_CANVAS_PRESET = CANVAS_PRESETS[0];
+const DEFAULT_CANVAS_PRESET_ID = DEFAULT_CANVAS_PRESET.id;
+const PHONE_WIDTH_RATIO = (DEFAULT_CANVAS_PRESET.width - 220) / DEFAULT_CANVAS_PRESET.width;
+const PHONE_HEIGHT_RATIO = 1400 / DEFAULT_CANVAS_PRESET.height;
+const PHONE_TOP_RATIO = 260 / DEFAULT_CANVAS_PRESET.height;
 const CENTER_SNAP_THRESHOLD_PX = 5;
 
 const FONT_OPTIONS = [
@@ -198,7 +214,6 @@ const LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
 const PROJECT_AUTOSAVE_DELAY_MS = 700;
 const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
-const CANVAS_THUMBNAIL_HEIGHT = Math.round((CANVAS_THUMBNAIL_WIDTH * CANVAS_PRESET.height) / CANVAS_PRESET.width);
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
 const PROJECT_MEDIA_DB_VERSION = 1;
 const PROJECT_MEDIA_STORE_NAME = 'project_media';
@@ -224,8 +239,33 @@ interface ProjectMediaRecord {
   updatedAt: string;
 }
 
+function getCanvasPresetById(id: string) {
+  return CANVAS_PRESETS.find((preset) => preset.id === id) ?? DEFAULT_CANVAS_PRESET;
+}
+
+function getCanvasDimensionsFromState(state: CanvasDesignState) {
+  const preset = getCanvasPresetById(state.canvasPresetId);
+  return { width: preset.width, height: preset.height };
+}
+
+function getCanvasThumbnailHeight(width: number, height: number) {
+  return Math.max(1, Math.round((CANVAS_THUMBNAIL_WIDTH * height) / width));
+}
+
+function getPhoneBaseMetrics(canvasWidth: number, canvasHeight: number, phoneScale: number) {
+  const width = canvasWidth * PHONE_WIDTH_RATIO * phoneScale;
+  const height = canvasHeight * PHONE_HEIGHT_RATIO * phoneScale;
+  return {
+    width,
+    height,
+    x: (canvasWidth - width) / 2,
+    y: canvasHeight * PHONE_TOP_RATIO,
+  };
+}
+
 function createEmptyCanvasState(): CanvasDesignState {
   return {
+    canvasPresetId: DEFAULT_CANVAS_PRESET_ID,
     backgroundMode: DEFAULTS.backgroundMode,
     backgroundPrimary: DEFAULTS.backgroundPrimary,
     backgroundSecondary: DEFAULTS.backgroundSecondary,
@@ -373,8 +413,11 @@ function sanitizeCanvasState(state: unknown): CanvasDesignState {
   const fallback = createEmptyCanvasState();
   const raw = state as Partial<CanvasDesignState>;
   const rawMedia = raw.media;
+  const presetId = typeof raw.canvasPresetId === 'string' ? raw.canvasPresetId : DEFAULT_CANVAS_PRESET_ID;
+  const preset = getCanvasPresetById(presetId);
 
   return {
+    canvasPresetId: preset.id,
     backgroundMode: raw.backgroundMode === 'gradient' ? 'gradient' : 'solid',
     backgroundPrimary: typeof raw.backgroundPrimary === 'string' ? raw.backgroundPrimary : fallback.backgroundPrimary,
     backgroundSecondary: typeof raw.backgroundSecondary === 'string' ? raw.backgroundSecondary : fallback.backgroundSecondary,
@@ -793,12 +836,13 @@ function getFontFamily(fontKey: FontKey) {
 }
 
 function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOptions): LayoutMetrics {
-  const { width, phoneOffset, phoneScale, textBoxes } = options;
+  const { width, height, phoneOffset, phoneScale, textBoxes } = options;
 
-  const scaledPhoneWidth = BASE_PHONE_WIDTH * phoneScale;
-  const scaledPhoneHeight = BASE_PHONE_HEIGHT * phoneScale;
-  const phoneX = (width - scaledPhoneWidth) / 2 + phoneOffset.x;
-  const phoneY = 260 + phoneOffset.y;
+  const basePhone = getPhoneBaseMetrics(width, height, phoneScale);
+  const scaledPhoneWidth = basePhone.width;
+  const scaledPhoneHeight = basePhone.height;
+  const phoneX = basePhone.x + phoneOffset.x;
+  const phoneY = basePhone.y + phoneOffset.y;
 
   const screenInset = 22 * phoneScale;
   const screenX = phoneX + screenInset;
@@ -1039,9 +1083,10 @@ function createCanvasThumbnailDataUrl(
   state: CanvasDesignState,
   media: HTMLImageElement | HTMLVideoElement | null,
 ) {
+  const canvasSize = getCanvasDimensionsFromState(state);
   const fullCanvas = document.createElement('canvas');
-  fullCanvas.width = CANVAS_PRESET.width;
-  fullCanvas.height = CANVAS_PRESET.height;
+  fullCanvas.width = canvasSize.width;
+  fullCanvas.height = canvasSize.height;
 
   const fullCtx = fullCanvas.getContext('2d');
   if (!fullCtx) {
@@ -1049,8 +1094,8 @@ function createCanvasThumbnailDataUrl(
   }
 
   drawComposition(fullCtx, {
-    width: CANVAS_PRESET.width,
-    height: CANVAS_PRESET.height,
+    width: canvasSize.width,
+    height: canvasSize.height,
     backgroundMode: state.backgroundMode,
     backgroundPrimary: state.backgroundPrimary,
     backgroundSecondary: state.backgroundSecondary,
@@ -1067,7 +1112,7 @@ function createCanvasThumbnailDataUrl(
 
   const thumbCanvas = document.createElement('canvas');
   thumbCanvas.width = CANVAS_THUMBNAIL_WIDTH;
-  thumbCanvas.height = CANVAS_THUMBNAIL_HEIGHT;
+  thumbCanvas.height = getCanvasThumbnailHeight(canvasSize.width, canvasSize.height);
 
   const thumbCtx = thumbCanvas.getContext('2d');
   if (!thumbCtx) {
@@ -1160,6 +1205,7 @@ function App() {
   const [backgroundPrimary, setBackgroundPrimary] = useState(initialCanvas.state.backgroundPrimary);
   const [backgroundSecondary, setBackgroundSecondary] = useState(initialCanvas.state.backgroundSecondary);
   const [gradientAngle, setGradientAngle] = useState(initialCanvas.state.gradientAngle);
+  const [canvasPresetId, setCanvasPresetId] = useState(initialCanvas.state.canvasPresetId);
 
   const [phoneOffset, setPhoneOffset] = useState<Offset>({ ...initialCanvas.state.phoneOffset });
   const [phoneScale, setPhoneScale] = useState(initialCanvas.state.phoneScale);
@@ -1192,6 +1238,7 @@ function App() {
 
   const currentCanvasState = useMemo<CanvasDesignState>(
     () => ({
+      canvasPresetId,
       backgroundMode,
       backgroundPrimary,
       backgroundSecondary,
@@ -1207,6 +1254,7 @@ function App() {
     [
       assetKind,
       assetName,
+      canvasPresetId,
       backgroundMode,
       backgroundPrimary,
       backgroundSecondary,
@@ -1216,6 +1264,8 @@ function App() {
       textBoxes,
     ],
   );
+
+  const currentCanvasPreset = useMemo(() => getCanvasPresetById(canvasPresetId), [canvasPresetId]);
 
   const currentProjectState = useMemo<ProjectDesignState | null>(() => {
     if (!currentProject) {
@@ -1376,6 +1426,7 @@ function App() {
 
       const targetState = targetCanvas.state;
       setCurrentCanvasId(targetCanvas.id);
+      setCanvasPresetId(targetState.canvasPresetId);
       setBackgroundMode(targetState.backgroundMode);
       setBackgroundPrimary(targetState.backgroundPrimary);
       setBackgroundSecondary(targetState.backgroundSecondary);
@@ -1720,7 +1771,10 @@ function App() {
       return;
     }
 
-    const newCanvas = createCanvasRecord(createNextCanvasName(currentProjectState.canvases));
+    const newCanvas = createCanvasRecord(createNextCanvasName(currentProjectState.canvases), {
+      ...createEmptyCanvasState(),
+      canvasPresetId,
+    });
     const now = new Date().toISOString();
     const nextState: ProjectDesignState = {
       canvases: [...currentProjectState.canvases, newCanvas],
@@ -1736,7 +1790,7 @@ function App() {
     applyProjectState(nextProject, newCanvas.id);
     void restoreProjectMedia(nextProject, newCanvas.id);
     setStatusMessage('새 캔버스를 추가했습니다.');
-  }, [applyProjectState, currentProject, currentProjectState, restoreProjectMedia]);
+  }, [applyProjectState, canvasPresetId, currentProject, currentProjectState, restoreProjectMedia]);
 
   const handleDuplicateCanvas = useCallback(
     (sourceCanvasId: string) => {
@@ -1858,6 +1912,10 @@ function App() {
         return;
       }
 
+      const activeCanvas =
+        project.state.canvases.find((canvas) => canvas.id === project.state.currentCanvasId) ?? project.state.canvases[0];
+      const activeCanvasPreset = getCanvasPresetById(activeCanvas?.state.canvasPresetId ?? DEFAULT_CANVAS_PRESET_ID);
+
       const payload: ProjectFilePayload = {
         version: 2,
         project: {
@@ -1866,8 +1924,8 @@ function App() {
           updatedAt: project.updatedAt,
         },
         canvas: {
-          width: CANVAS_PRESET.width,
-          height: CANVAS_PRESET.height,
+          width: activeCanvasPreset.width,
+          height: activeCanvasPreset.height,
         },
         state: project.state,
       };
@@ -1980,8 +2038,8 @@ function App() {
       return;
     }
 
-    canvas.width = CANVAS_PRESET.width;
-    canvas.height = CANVAS_PRESET.height;
+    canvas.width = currentCanvasPreset.width;
+    canvas.height = currentCanvasPreset.height;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) {
@@ -1991,8 +2049,8 @@ function App() {
     const media = assetKind === 'video' ? videoRef.current : imageRef.current;
 
     const layout = drawComposition(ctx, {
-      width: CANVAS_PRESET.width,
-      height: CANVAS_PRESET.height,
+      width: currentCanvasPreset.width,
+      height: currentCanvasPreset.height,
       backgroundMode,
       backgroundPrimary,
       backgroundSecondary,
@@ -2014,6 +2072,8 @@ function App() {
     backgroundMode,
     backgroundPrimary,
     backgroundSecondary,
+    currentCanvasPreset.height,
+    currentCanvasPreset.width,
     gradientAngle,
     phoneOffset,
     phoneScale,
@@ -2537,10 +2597,11 @@ function App() {
         }
 
         if (session.target === 'phone') {
-          const phoneWidth = BASE_PHONE_WIDTH * phoneScale;
-          const phoneHeight = BASE_PHONE_HEIGHT * phoneScale;
-          const basePhoneX = (CANVAS_PRESET.width - phoneWidth) / 2;
-          const basePhoneY = 260;
+          const basePhone = getPhoneBaseMetrics(currentCanvasPreset.width, currentCanvasPreset.height, phoneScale);
+          const phoneWidth = basePhone.width;
+          const phoneHeight = basePhone.height;
+          const basePhoneX = basePhone.x;
+          const basePhoneY = basePhone.y;
 
           const snappedPhoneTopLeft = applyCenterSnap(
             {
@@ -2548,7 +2609,7 @@ function App() {
               y: basePhoneY + session.startPhoneOffset.y + dy,
             },
             { width: phoneWidth, height: phoneHeight },
-            { width: CANVAS_PRESET.width, height: CANVAS_PRESET.height },
+            { width: currentCanvasPreset.width, height: currentCanvasPreset.height },
             snapThreshold,
           );
 
@@ -2570,7 +2631,7 @@ function App() {
               y: session.startTextBoxPosition.y + dy,
             },
             session.startTextBoxSize ?? { width: 120, height: 60 },
-            { width: CANVAS_PRESET.width, height: CANVAS_PRESET.height },
+            { width: currentCanvasPreset.width, height: currentCanvasPreset.height },
             snapThreshold,
           );
 
@@ -2618,7 +2679,16 @@ function App() {
 
       event.currentTarget.style.cursor = 'default';
     },
-    [findTopmostTextBoxAtPoint, getCanvasSnapThreshold, isPlacingTextBox, phoneScale, toCanvasPoint, updateSnapGuide],
+    [
+      currentCanvasPreset.height,
+      currentCanvasPreset.width,
+      findTopmostTextBoxAtPoint,
+      getCanvasSnapThreshold,
+      isPlacingTextBox,
+      phoneScale,
+      toCanvasPoint,
+      updateSnapGuide,
+    ],
   );
 
   const finishCanvasDrag = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -2726,9 +2796,10 @@ function App() {
 
   const renderCanvasImageArtifact = useCallback(
     async (state: CanvasDesignState, media: HTMLImageElement | HTMLVideoElement | null): Promise<CanvasExportArtifact> => {
+      const canvasSize = getCanvasDimensionsFromState(state);
       const offscreen = document.createElement('canvas');
-      offscreen.width = CANVAS_PRESET.width;
-      offscreen.height = CANVAS_PRESET.height;
+      offscreen.width = canvasSize.width;
+      offscreen.height = canvasSize.height;
 
       const ctx = offscreen.getContext('2d');
       if (!ctx) {
@@ -2736,8 +2807,8 @@ function App() {
       }
 
       drawComposition(ctx, {
-        width: CANVAS_PRESET.width,
-        height: CANVAS_PRESET.height,
+        width: canvasSize.width,
+        height: canvasSize.height,
         backgroundMode: state.backgroundMode,
         backgroundPrimary: state.backgroundPrimary,
         backgroundSecondary: state.backgroundSecondary,
@@ -2783,9 +2854,10 @@ function App() {
         instance.addEventListener('error', onError, { once: true });
       });
 
+      const canvasSize = getCanvasDimensionsFromState(state);
       const offscreen = document.createElement('canvas');
-      offscreen.width = CANVAS_PRESET.width;
-      offscreen.height = CANVAS_PRESET.height;
+      offscreen.width = canvasSize.width;
+      offscreen.height = canvasSize.height;
 
       const ctx = offscreen.getContext('2d');
       if (!ctx) {
@@ -2827,8 +2899,8 @@ function App() {
 
           const frame = () => {
             drawComposition(ctx, {
-              width: CANVAS_PRESET.width,
-              height: CANVAS_PRESET.height,
+              width: canvasSize.width,
+              height: canvasSize.height,
               backgroundMode: state.backgroundMode,
               backgroundPrimary: state.backgroundPrimary,
               backgroundSecondary: state.backgroundSecondary,
@@ -3158,6 +3230,8 @@ function App() {
           <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
             {currentProjectCanvases.map((canvas) => {
               const isActive = canvas.id === currentCanvasId;
+              const canvasPreset = getCanvasPresetById(canvas.state.canvasPresetId);
+              const thumbnailHeight = getCanvasThumbnailHeight(canvasPreset.width, canvasPreset.height);
               const kindLabel =
                 canvas.state.media.kind === 'video' ? '영상' : canvas.state.media.kind === 'image' ? '이미지' : '미디어 없음';
               return (
@@ -3212,7 +3286,7 @@ function App() {
                     <div className="rounded-md border border-zinc-200/80 bg-zinc-100/70 p-1">
                       <div
                         className="mx-auto overflow-hidden rounded-[8px] border border-zinc-300 bg-zinc-200"
-                        style={{ width: CANVAS_THUMBNAIL_WIDTH / 2, height: CANVAS_THUMBNAIL_HEIGHT / 2 }}
+                        style={{ width: CANVAS_THUMBNAIL_WIDTH / 2, height: thumbnailHeight / 2 }}
                       >
                         {canvas.thumbnailDataUrl ? (
                           <img
@@ -3253,13 +3327,19 @@ function App() {
               <div className="space-y-2">
                 <Label>캔버스 규격</Label>
                 <select
-                  value={CANVAS_PRESET.label}
-                  disabled
-                  className="h-10 w-full rounded-md border border-zinc-300 bg-zinc-50 px-3 text-sm text-zinc-700"
+                  value={canvasPresetId}
+                  onChange={(event) => setCanvasPresetId(event.target.value)}
+                  className="h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-700"
                 >
-                  <option>{CANVAS_PRESET.label}</option>
+                  {CANVAS_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </option>
+                  ))}
                 </select>
-                <p className="text-xs text-zinc-500">추후 여러 규격으로 확장할 수 있도록 구조를 분리해 두었습니다.</p>
+                <p className="text-xs text-zinc-500">
+                  현재 캔버스 기준: {currentCanvasPreset.width} x {currentCanvasPreset.height}px
+                </p>
               </div>
 
               <div className="space-y-3">
@@ -3558,7 +3638,7 @@ function App() {
                     ref={previewCanvasRef}
                     className="h-auto w-full rounded-[22px]"
                     style={{
-                      aspectRatio: `${CANVAS_PRESET.width}/${CANVAS_PRESET.height}`,
+                      aspectRatio: `${currentCanvasPreset.width}/${currentCanvasPreset.height}`,
                       cursor: isPlacingTextBox ? 'crosshair' : 'default',
                     }}
                     onPointerDown={handleCanvasPointerDown}
