@@ -3975,7 +3975,7 @@ function App() {
                         <button
                           type="button"
                           onClick={() => handleSelectProject(project.id)}
-                          className={`h-8 rounded-md border px-2 text-[11px] ${
+                          className={`h-8 shrink-0 min-w-[64px] whitespace-nowrap rounded-md border px-2 text-[11px] ${
                             isActive
                               ? 'border-blue-300 bg-white text-blue-700'
                               : 'border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50'
@@ -3986,7 +3986,7 @@ function App() {
                         <Input
                           value={project.name}
                           onChange={(event) => handleRenameProject(project.id, event.target.value)}
-                          className="h-8 border-zinc-300 bg-white text-xs"
+                          className="h-8 min-w-0 flex-1 border-zinc-300 bg-white text-xs"
                         />
                         <button
                           type="button"
