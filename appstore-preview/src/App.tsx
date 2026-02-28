@@ -557,6 +557,18 @@ function isEditableTarget(target: EventTarget | null) {
   return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+function focusElementWithoutScroll(element: HTMLElement | null) {
+  if (!element) {
+    return;
+  }
+
+  try {
+    element.focus({ preventScroll: true });
+  } catch {
+    element.focus();
+  }
+}
+
 function parseStoredProjects(raw: string | null) {
   if (!raw) {
     return [];
@@ -2583,7 +2595,7 @@ function App() {
       return;
     }
 
-    editor.focus();
+    focusElementWithoutScroll(editor);
     const end = editor.value.length;
     editor.setSelectionRange(end, end);
   }, [isInlineTextEditing, selectedTextBoxId]);
@@ -3098,7 +3110,7 @@ function App() {
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
       setIsInlineTextEditing(false);
-      event.currentTarget.focus();
+      focusElementWithoutScroll(event.currentTarget);
       const point = toCanvasPoint(event.clientX, event.clientY);
       const layout = layoutRef.current;
 
@@ -3339,7 +3351,7 @@ function App() {
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLCanvasElement>) => {
-      event.currentTarget.focus();
+      focusElementWithoutScroll(event.currentTarget);
 
       if (suppressCanvasClickRef.current) {
         suppressCanvasClickRef.current = false;
@@ -4375,7 +4387,7 @@ function App() {
                           if (event.key === 'Escape') {
                             event.preventDefault();
                             setIsInlineTextEditing(false);
-                            previewCanvasRef.current?.focus();
+                            focusElementWithoutScroll(previewCanvasRef.current);
                           }
                         }}
                         className={`absolute z-20 resize-none border-2 px-1 py-0.5 font-extrabold leading-[1.2] outline-none ${
