@@ -3,6 +3,19 @@
 `appstore-preview` is a browser-based composer for iPhone App Store preview assets.
 It is built with React + TypeScript + Tailwind + shadcn-style UI components and runs fully on the client (no backend required).
 
+## What This Project Is
+
+- A visual editor for App Store-style iPhone preview images/videos
+- A multi-project, multi-canvas workflow tool for marketing asset production
+- A frontend-only app with local persistence and export support
+
+## UI Preview Files
+
+- [Design Settings and Live Preview](docs/screenshots/design-settings-live-preview.png)
+- [Canvas List Overview](docs/screenshots/canvas-list-overview.png)
+
+If the links above open `404`, add the image files to `docs/screenshots/` with those exact filenames.
+
 ## Features
 
 - Multi-project workflow
@@ -23,12 +36,6 @@ It is built with React + TypeScript + Tailwind + shadcn-style UI components and 
 - Undo/Redo:
   - Supports content and structural changes (including canvas/project delete/recover)
   - History is in-memory and resets after page refresh
-
-## UI Screenshots
-
-![Design Settings and Live Preview](docs/screenshots/design-settings-live-preview.png)
-
-![Canvas List Overview](docs/screenshots/canvas-list-overview.png)
 
 ## Canvas Presets
 
