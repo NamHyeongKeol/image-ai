@@ -165,6 +165,9 @@ const DEFAULTS = {
 const LOCAL_PROJECTS_STORAGE_KEY = 'appstore-preview.projects.v1';
 const LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
 const PROJECT_AUTOSAVE_DELAY_MS = 700;
+const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
+const PROJECT_MEDIA_DB_VERSION = 1;
+const PROJECT_MEDIA_STORE_NAME = 'project_media';
 
 interface FileHandleLike {
   createWritable: () => Promise<{
@@ -176,6 +179,15 @@ interface FileHandleLike {
 interface DirectoryHandleLike {
   getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<DirectoryHandleLike>;
   getFileHandle: (name: string, options?: { create?: boolean }) => Promise<FileHandleLike>;
+}
+
+interface ProjectMediaRecord {
+  projectId: string;
+  kind: Exclude<MediaKind, null>;
+  name: string;
+  type: string;
+  blob: Blob;
+  updatedAt: string;
 }
 
 function createEmptyDesignState(): ProjectDesignState {
@@ -297,6 +309,67 @@ function getInitialProjectStore() {
     projects: storedProjects,
     currentProjectId,
   };
+}
+
+async function openProjectMediaDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(PROJECT_MEDIA_DB_NAME, PROJECT_MEDIA_DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(PROJECT_MEDIA_STORE_NAME)) {
+        db.createObjectStore(PROJECT_MEDIA_STORE_NAME, { keyPath: 'projectId' });
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB를 열지 못했습니다.'));
+  });
+}
+
+async function saveProjectMediaRecord(record: ProjectMediaRecord) {
+  const db = await openProjectMediaDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PROJECT_MEDIA_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(PROJECT_MEDIA_STORE_NAME);
+    store.put(record);
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('미디어 저장에 실패했습니다.'));
+    tx.onabort = () => reject(tx.error ?? new Error('미디어 저장이 중단되었습니다.'));
+  });
+  db.close();
+}
+
+async function readProjectMediaRecord(projectId: string) {
+  const db = await openProjectMediaDb();
+  const result = await new Promise<ProjectMediaRecord | null>((resolve, reject) => {
+    const tx = db.transaction(PROJECT_MEDIA_STORE_NAME, 'readonly');
+    const store = tx.objectStore(PROJECT_MEDIA_STORE_NAME);
+    const request = store.get(projectId);
+
+    request.onsuccess = () => {
+      const value = request.result as ProjectMediaRecord | undefined;
+      resolve(value ?? null);
+    };
+    request.onerror = () => reject(request.error ?? new Error('미디어 조회에 실패했습니다.'));
+  });
+  db.close();
+  return result;
+}
+
+async function removeProjectMediaRecord(projectId: string) {
+  const db = await openProjectMediaDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PROJECT_MEDIA_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(PROJECT_MEDIA_STORE_NAME);
+    store.delete(projectId);
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('미디어 삭제에 실패했습니다.'));
+    tx.onabort = () => reject(tx.error ?? new Error('미디어 삭제가 중단되었습니다.'));
+  });
+  db.close();
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -796,15 +869,17 @@ function App() {
   const canvasDropDepthRef = useRef(0);
   const nextTextBoxIdRef = useRef(getNextTextBoxSerial(initialProject.state.textBoxes));
   const autoSaveErrorNotifiedRef = useRef(false);
+  const mediaRestoreTokenRef = useRef(0);
+  const loadedProjectIdRef = useRef<string | null>(null);
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
   const [connectedSaveDirectory, setConnectedSaveDirectory] = useState<DirectoryHandleLike | null>(null);
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState('');
 
-  const [assetKind, setAssetKind] = useState<MediaKind>(initialProject.state.media.kind);
+  const [assetKind, setAssetKind] = useState<MediaKind>(null);
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
-  const [assetName, setAssetName] = useState(initialProject.state.media.name);
+  const [assetName, setAssetName] = useState('');
 
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(initialProject.state.backgroundMode);
   const [backgroundPrimary, setBackgroundPrimary] = useState(initialProject.state.backgroundPrimary);
@@ -987,11 +1062,92 @@ function App() {
       setSelectedTextBoxId(null);
       setIsPlacingTextBox(false);
       nextTextBoxIdRef.current = getNextTextBoxSerial(project.state.textBoxes);
-      clearLoadedMedia();
-      setStatusMessage(`${project.name} 프로젝트를 불러왔습니다. 미디어는 다시 업로드해 주세요.`);
-      setErrorMessage('');
     },
-    [clearLoadedMedia],
+    [],
+  );
+
+  const restoreProjectMedia = useCallback(
+    async (project: ProjectRecord) => {
+      const token = mediaRestoreTokenRef.current + 1;
+      mediaRestoreTokenRef.current = token;
+      clearLoadedMedia();
+      setErrorMessage('');
+
+      if (typeof indexedDB === 'undefined') {
+        setStatusMessage(`${project.name} 프로젝트를 불러왔습니다.`);
+        return;
+      }
+
+      try {
+        const record = await readProjectMediaRecord(project.id);
+        if (token !== mediaRestoreTokenRef.current) {
+          return;
+        }
+
+        if (!record) {
+          setStatusMessage(`${project.name} 프로젝트를 불러왔습니다.`);
+          return;
+        }
+
+        const objectUrl = URL.createObjectURL(record.blob);
+        setAssetObjectUrl(objectUrl);
+        setAssetName(record.name);
+
+        if (record.kind === 'image') {
+          const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const instance = new Image();
+            instance.onload = () => resolve(instance);
+            instance.onerror = () => reject(new Error('저장된 이미지를 복원하지 못했습니다.'));
+            instance.src = objectUrl;
+          });
+
+          if (token !== mediaRestoreTokenRef.current) {
+            return;
+          }
+
+          videoRef.current?.pause();
+          videoRef.current = null;
+          imageRef.current = image;
+          setAssetKind('image');
+          setStatusMessage(`${project.name} 프로젝트를 불러왔고, 저장된 이미지를 복원했습니다.`);
+          return;
+        }
+
+        const video = await new Promise<HTMLVideoElement>((resolve, reject) => {
+          const instance = document.createElement('video');
+          instance.preload = 'auto';
+          instance.playsInline = true;
+          instance.muted = true;
+          instance.loop = true;
+          instance.src = objectUrl;
+
+          const onLoadedData = () => resolve(instance);
+          const onError = () => reject(new Error('저장된 영상을 복원하지 못했습니다.'));
+
+          instance.addEventListener('loadeddata', onLoadedData, { once: true });
+          instance.addEventListener('error', onError, { once: true });
+        });
+
+        if (token !== mediaRestoreTokenRef.current) {
+          return;
+        }
+
+        await video.play().catch(() => undefined);
+        imageRef.current = null;
+        videoRef.current = video;
+        setAssetKind('video');
+        setStatusMessage(`${project.name} 프로젝트를 불러왔고, 저장된 영상을 복원했습니다.`);
+      } catch (error) {
+        if (token !== mediaRestoreTokenRef.current) {
+          return;
+        }
+
+        clearLoadedMedia();
+        setErrorMessage(error instanceof Error ? error.message : '미디어 복원에 실패했습니다.');
+        setStatusMessage(`${project.name} 프로젝트를 불러왔습니다. 미디어는 다시 업로드해 주세요.`);
+      }
+    },
+    [clearLoadedMedia, setAssetObjectUrl],
   );
 
   const handleSelectProject = useCallback(
@@ -1014,9 +1170,8 @@ function App() {
         ),
       );
       setCurrentProjectId(nextProject.id);
-      applyProjectState(nextProject);
     },
-    [applyProjectState, currentDesignState, currentProjectId, projects],
+    [currentDesignState, currentProjectId, projects],
   );
 
   const handleCreateProject = useCallback(() => {
@@ -1035,8 +1190,7 @@ function App() {
       newProject,
     ]);
     setCurrentProjectId(newProject.id);
-    applyProjectState(newProject);
-  }, [applyProjectState, currentDesignState, currentProjectId, projects]);
+  }, [currentDesignState, currentProjectId, projects]);
 
   const persistProjectFileToDirectory = useCallback(
     async (project: ProjectRecord) => {
@@ -1209,6 +1363,21 @@ function App() {
   }, [selectedTextBoxId, textBoxes]);
 
   useEffect(() => {
+    if (loadedProjectIdRef.current === currentProjectId) {
+      return;
+    }
+
+    const targetProject = projects.find((project) => project.id === currentProjectId);
+    if (!targetProject) {
+      return;
+    }
+
+    loadedProjectIdRef.current = currentProjectId;
+    applyProjectState(targetProject);
+    void restoreProjectMedia(targetProject);
+  }, [applyProjectState, currentProjectId, projects, restoreProjectMedia]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       const now = new Date().toISOString();
       setProjects((previous) =>
@@ -1325,6 +1494,16 @@ function App() {
           imageRef.current = image;
           setAssetKind('image');
           setStatusMessage('이미지 업로드 완료. PNG로 출력됩니다.');
+          void saveProjectMediaRecord({
+            projectId: currentProjectId,
+            kind: 'image',
+            name: file.name,
+            type: file.type,
+            blob: file,
+            updatedAt: new Date().toISOString(),
+          }).catch(() => {
+            setErrorMessage('이미지 캐시 저장에 실패했습니다. 새로고침 시 복원이 안 될 수 있습니다.');
+          });
           return;
         }
 
@@ -1349,6 +1528,16 @@ function App() {
         videoRef.current = video;
         setAssetKind('video');
         setStatusMessage('영상 업로드 완료. 영상으로 출력됩니다.');
+        void saveProjectMediaRecord({
+          projectId: currentProjectId,
+          kind: 'video',
+          name: file.name,
+          type: file.type,
+          blob: file,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {
+          setErrorMessage('영상 캐시 저장에 실패했습니다. 새로고침 시 복원이 안 될 수 있습니다.');
+        });
       } catch (error) {
         imageRef.current = null;
         videoRef.current?.pause();
@@ -1358,9 +1547,10 @@ function App() {
         setAssetObjectUrl(null);
         setErrorMessage(error instanceof Error ? error.message : '업로드 처리에 실패했습니다.');
         setStatusMessage('파일을 다시 선택해 주세요.');
+        void removeProjectMediaRecord(currentProjectId).catch(() => undefined);
       }
     },
-    [setAssetObjectUrl],
+    [currentProjectId, setAssetObjectUrl],
   );
 
   const handleFileChange = useCallback(
