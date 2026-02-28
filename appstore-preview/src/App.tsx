@@ -1001,7 +1001,14 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
 }
 
 function pickRecorderMimeType() {
-  const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  const candidates = [
+    'video/mp4;codecs=avc1.4D401E,mp4a.40.2',
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? '';
 }
 
@@ -2463,6 +2470,7 @@ function App() {
     const outputMime = blob.type || recorder.mimeType || mimeType || 'video/webm';
     const extension = outputMime.includes('mp4') ? 'mp4' : 'webm';
     setArtifactBlob(blob, 'video', outputMime, buildOutputFileName(assetName || 'preview', extension));
+    return outputMime;
   }, [
     assetName,
     assetUrl,
@@ -2490,8 +2498,14 @@ function App() {
         await exportImage();
         setStatusMessage('이미지 출력 완료: PNG 파일이 저장되었습니다.');
       } else {
-        await exportVideo();
-        setStatusMessage('영상 출력 완료: 영상 파일이 저장되었습니다.');
+        const outputMime = await exportVideo();
+        const isMp4Output = outputMime.includes('mp4');
+        const sourceIsMp4 = /\.mp4$/i.test(assetName);
+        if (sourceIsMp4 && !isMp4Output) {
+          setStatusMessage('영상 출력 완료: 현재 브라우저 인코더 제한으로 WebM으로 저장되었습니다.');
+        } else {
+          setStatusMessage(`영상 출력 완료: ${isMp4Output ? 'MP4' : 'WebM'} 파일이 저장되었습니다.`);
+        }
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '내보내기에 실패했습니다.');
@@ -2499,7 +2513,7 @@ function App() {
     } finally {
       setIsExporting(false);
     }
-  }, [assetKind, exportImage, exportVideo]);
+  }, [assetKind, assetName, exportImage, exportVideo]);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#d9f4ff_0,#f2f4f7_42%,#eef2ff_100%)] px-4 py-8 text-zinc-900">
