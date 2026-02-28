@@ -14,8 +14,10 @@ import {
   Image as ImageIcon,
   Palette,
   Plus,
+  Redo2,
   RotateCcw,
   Trash2,
+  Undo2,
   Upload,
 } from 'lucide-react';
 import JSZip from 'jszip';
@@ -92,6 +94,28 @@ interface CanvasExportArtifact {
   blob: Blob;
   mimeType: string;
   extension: string;
+}
+
+interface CanvasHistoryState {
+  canvasPresetId: string;
+  backgroundMode: BackgroundMode;
+  backgroundPrimary: string;
+  backgroundSecondary: string;
+  gradientAngle: number;
+  phoneOffset: Offset;
+  phoneScale: number;
+  textBoxes: TextBoxModel[];
+}
+
+interface CanvasHistorySnapshot {
+  state: CanvasHistoryState;
+  selectedTextBoxId: string | null;
+}
+
+interface CanvasHistoryEntry {
+  past: CanvasHistorySnapshot[];
+  present: CanvasHistorySnapshot | null;
+  future: CanvasHistorySnapshot[];
 }
 
 interface CanvasDesignState {
@@ -215,6 +239,7 @@ const PROJECT_AUTOSAVE_DELAY_MS = 700;
 const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
 const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
+const HISTORY_LIMIT_PER_CANVAS = 120;
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
 const PROJECT_MEDIA_DB_VERSION = 1;
 const PROJECT_MEDIA_STORE_NAME = 'project_media';
@@ -262,6 +287,29 @@ function getPhoneBaseMetrics(canvasWidth: number, canvasHeight: number, phoneSca
     x: (canvasWidth - width) / 2,
     y: canvasHeight * PHONE_TOP_RATIO,
   };
+}
+
+function cloneHistoryState(state: CanvasHistoryState): CanvasHistoryState {
+  return {
+    ...state,
+    phoneOffset: { ...state.phoneOffset },
+    textBoxes: state.textBoxes.map((box) => ({ ...box })),
+  };
+}
+
+function cloneHistorySnapshot(snapshot: CanvasHistorySnapshot): CanvasHistorySnapshot {
+  return {
+    state: cloneHistoryState(snapshot.state),
+    selectedTextBoxId: snapshot.selectedTextBoxId,
+  };
+}
+
+function areHistorySnapshotsEqual(left: CanvasHistorySnapshot, right: CanvasHistorySnapshot) {
+  if (left.selectedTextBoxId !== right.selectedTextBoxId) {
+    return false;
+  }
+
+  return JSON.stringify(left.state) === JSON.stringify(right.state);
 }
 
 function createEmptyCanvasState(): CanvasDesignState {
@@ -1212,6 +1260,8 @@ function App() {
   const mediaRestoreTokenRef = useRef(0);
   const loadedProjectIdRef = useRef<string | null>(null);
   const copiedTextBoxRef = useRef<TextBoxModel | null>(null);
+  const historyStoreRef = useRef<Record<string, CanvasHistoryEntry>>({});
+  const isApplyingHistoryRef = useRef(false);
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
@@ -1243,6 +1293,8 @@ function App() {
   const [isUploadDropActive, setIsUploadDropActive] = useState(false);
   const [isCanvasDropActive, setIsCanvasDropActive] = useState(false);
   const [snapGuide, setSnapGuide] = useState({ vertical: false, horizontal: false });
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState(
     'iPhone 프레임/텍스트박스를 드래그해 배치하고, 이미지/영상을 DnD 또는 클릭 업로드해 주세요.',
@@ -1325,6 +1377,41 @@ function App() {
 
     return buildProjectCanvasMediaKey(currentProjectId, currentCanvasId);
   }, [currentCanvasId, currentProjectId]);
+
+  const currentHistoryKey = useMemo(() => {
+    if (!currentProjectId || !currentCanvasId) {
+      return '';
+    }
+
+    return `${currentProjectId}::${currentCanvasId}`;
+  }, [currentCanvasId, currentProjectId]);
+
+  const buildHistorySnapshot = useCallback<() => CanvasHistorySnapshot>(
+    () => ({
+      state: {
+        canvasPresetId,
+        backgroundMode,
+        backgroundPrimary,
+        backgroundSecondary,
+        gradientAngle,
+        phoneOffset: { ...phoneOffset },
+        phoneScale,
+        textBoxes: textBoxes.map((box) => ({ ...box })),
+      },
+      selectedTextBoxId,
+    }),
+    [
+      backgroundMode,
+      backgroundPrimary,
+      backgroundSecondary,
+      canvasPresetId,
+      gradientAngle,
+      phoneOffset,
+      phoneScale,
+      selectedTextBoxId,
+      textBoxes,
+    ],
+  );
 
   const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
     const canvas = previewCanvasRef.current;
@@ -2054,6 +2141,69 @@ function App() {
     return true;
   }, []);
 
+  const applyHistorySnapshot = useCallback((snapshot: CanvasHistorySnapshot) => {
+    isApplyingHistoryRef.current = true;
+    setCanvasPresetId(snapshot.state.canvasPresetId);
+    setBackgroundMode(snapshot.state.backgroundMode);
+    setBackgroundPrimary(snapshot.state.backgroundPrimary);
+    setBackgroundSecondary(snapshot.state.backgroundSecondary);
+    setGradientAngle(snapshot.state.gradientAngle);
+    setPhoneOffset({ ...snapshot.state.phoneOffset });
+    setPhoneScale(snapshot.state.phoneScale);
+    setTextBoxes(snapshot.state.textBoxes.map((box) => ({ ...box })));
+    setSelectedTextBoxId(snapshot.selectedTextBoxId);
+    nextTextBoxIdRef.current = getNextTextBoxSerial(snapshot.state.textBoxes);
+    setIsPlacingTextBox(false);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (!currentHistoryKey) {
+      return false;
+    }
+
+    const entry = historyStoreRef.current[currentHistoryKey];
+    if (!entry || !entry.present || entry.past.length === 0) {
+      return false;
+    }
+
+    const previousSnapshot = entry.past.pop();
+    if (!previousSnapshot) {
+      return false;
+    }
+
+    entry.future.unshift(cloneHistorySnapshot(entry.present));
+    entry.present = cloneHistorySnapshot(previousSnapshot);
+    applyHistorySnapshot(previousSnapshot);
+    setCanUndo(entry.past.length > 0);
+    setCanRedo(entry.future.length > 0);
+    setStatusMessage('이전 작업으로 되돌렸습니다.');
+    return true;
+  }, [applyHistorySnapshot, currentHistoryKey]);
+
+  const handleRedo = useCallback(() => {
+    if (!currentHistoryKey) {
+      return false;
+    }
+
+    const entry = historyStoreRef.current[currentHistoryKey];
+    if (!entry || !entry.present || entry.future.length === 0) {
+      return false;
+    }
+
+    const nextSnapshot = entry.future.shift();
+    if (!nextSnapshot) {
+      return false;
+    }
+
+    entry.past.push(cloneHistorySnapshot(entry.present));
+    entry.present = cloneHistorySnapshot(nextSnapshot);
+    applyHistorySnapshot(nextSnapshot);
+    setCanUndo(entry.past.length > 0);
+    setCanRedo(entry.future.length > 0);
+    setStatusMessage('되돌리기 작업을 다시 적용했습니다.');
+    return true;
+  }, [applyHistorySnapshot, currentHistoryKey]);
+
   const drawCurrentFrame = useCallback(() => {
     const canvas = previewCanvasRef.current;
     if (!canvas) {
@@ -2159,6 +2309,14 @@ function App() {
       }
 
       const key = event.key.toLowerCase();
+      if (key === 'z') {
+        const didHandle = event.shiftKey ? handleRedo() : handleUndo();
+        if (didHandle) {
+          event.preventDefault();
+        }
+        return;
+      }
+
       if (key === 'c') {
         if (selectedTextBox && copySelectedTextBox()) {
           event.preventDefault();
@@ -2177,7 +2335,15 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [copySelectedTextBox, hasCopiedTextBox, pasteCopiedTextBox, selectedTextBox, selectedTextBoxId]);
+  }, [
+    copySelectedTextBox,
+    handleRedo,
+    handleUndo,
+    hasCopiedTextBox,
+    pasteCopiedTextBox,
+    selectedTextBox,
+    selectedTextBoxId,
+  ]);
 
   useEffect(() => {
     if (loadedProjectIdRef.current === currentProjectId) {
@@ -2271,6 +2437,57 @@ function App() {
       window.clearTimeout(timer);
     };
   }, [assetKind, assetUrl, currentCanvasId, currentCanvasState, currentProjectId]);
+
+  useEffect(() => {
+    if (!currentHistoryKey) {
+      setCanUndo(false);
+      setCanRedo(false);
+      return;
+    }
+
+    const snapshot = buildHistorySnapshot();
+    const existing = historyStoreRef.current[currentHistoryKey];
+    if (!existing) {
+      historyStoreRef.current[currentHistoryKey] = {
+        past: [],
+        present: snapshot,
+        future: [],
+      };
+      setCanUndo(false);
+      setCanRedo(false);
+      return;
+    }
+
+    if (!existing.present) {
+      existing.present = snapshot;
+      setCanUndo(existing.past.length > 0);
+      setCanRedo(existing.future.length > 0);
+      return;
+    }
+
+    if (isApplyingHistoryRef.current) {
+      isApplyingHistoryRef.current = false;
+      existing.present = snapshot;
+      setCanUndo(existing.past.length > 0);
+      setCanRedo(existing.future.length > 0);
+      return;
+    }
+
+    if (areHistorySnapshotsEqual(existing.present, snapshot)) {
+      setCanUndo(existing.past.length > 0);
+      setCanRedo(existing.future.length > 0);
+      return;
+    }
+
+    existing.past.push(cloneHistorySnapshot(existing.present));
+    if (existing.past.length > HISTORY_LIMIT_PER_CANVAS) {
+      existing.past.shift();
+    }
+    existing.present = snapshot;
+    existing.future = [];
+    setCanUndo(existing.past.length > 0);
+    setCanRedo(false);
+  }, [buildHistorySnapshot, currentHistoryKey]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -3673,6 +3890,14 @@ function App() {
                 <Button type="button" variant="outline" onClick={resetStyle}>
                   <RotateCcw className="h-4 w-4" />
                   배경/프레임 초기화
+                </Button>
+                <Button type="button" variant="outline" onClick={handleUndo} disabled={!canUndo}>
+                  <Undo2 className="h-4 w-4" />
+                  되돌리기
+                </Button>
+                <Button type="button" variant="outline" onClick={handleRedo} disabled={!canRedo}>
+                  <Redo2 className="h-4 w-4" />
+                  다시실행
                 </Button>
                 <Button
                   type="button"
