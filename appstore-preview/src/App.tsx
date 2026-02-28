@@ -43,7 +43,7 @@ const FONT_OPTIONS = [
 ] as const;
 
 const DEFAULTS = {
-  titleText: '업로드한 앱 화면을\n깔끔한 iPhone 프리뷰로 만드세요',
+  titleText: '',
   titleFontKey: FONT_OPTIONS[0].key,
   titleColor: '#1f3b7c',
   titleSize: 66,
@@ -203,89 +203,28 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions) {
   } = options;
 
   fillBackground(ctx, width, height, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle);
+  const hasTitle = titleText.trim().length > 0;
 
-  ctx.save();
-  ctx.fillStyle = '#0f172a';
-  ctx.font = '700 58px "SF Pro Display", "Noto Sans KR", sans-serif';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('8:58', 84, 78);
+  if (hasTitle) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = titleColor;
+    ctx.font = `800 ${titleSize}px ${titleFontFamily}`;
+    const textLines = wrapTextToLines(ctx, titleText, width - 140);
+    const lineHeight = titleSize * 1.2;
+    const textStartY = 210;
 
-  ctx.lineWidth = 10;
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = '#0f172a';
-  ctx.beginPath();
-  ctx.moveTo(272, 44);
-  ctx.lineTo(255, 90);
-  ctx.stroke();
+    textLines.forEach((line, index) => {
+      ctx.fillText(line, width / 2, textStartY + index * lineHeight);
+    });
+    ctx.restore();
+  }
 
-  ctx.fillRect(width - 286, 56, 14, 28);
-  ctx.fillRect(width - 262, 46, 14, 38);
-  ctx.fillRect(width - 238, 36, 14, 48);
-
-  ctx.beginPath();
-  ctx.arc(width - 180, 60, 18, 0, Math.PI * 2);
-  ctx.stroke();
-
-  roundedRectPath(ctx, width - 122, 30, 72, 42, 18);
-  ctx.strokeStyle = '#22c55e';
-  ctx.lineWidth = 8;
-  ctx.stroke();
-  ctx.fillStyle = '#22c55e';
-  ctx.font = '700 34px "SF Pro Display", "Noto Sans KR", sans-serif';
-  ctx.fillText('100', width - 114, 52);
-  ctx.restore();
-
-  ctx.save();
-  roundedRectPath(ctx, width - 130, 112, 84, 84, 42);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(15, 23, 42, 0.2)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  ctx.strokeStyle = '#111827';
-  ctx.lineWidth = 8;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(width - 102, 140);
-  ctx.lineTo(width - 74, 168);
-  ctx.moveTo(width - 74, 140);
-  ctx.lineTo(width - 102, 168);
-  ctx.stroke();
-  ctx.restore();
-
-  const panelX = 56;
-  const panelY = 264;
-  const panelWidth = width - 112;
-  const panelHeight = height - 312;
-
-  ctx.save();
-  roundedRectPath(ctx, panelX, panelY, panelWidth, panelHeight, 72);
-  ctx.fillStyle = 'rgba(245, 247, 251, 0.88)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-  ctx.lineWidth = 4;
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.fillStyle = titleColor;
-  ctx.font = `800 ${titleSize}px ${titleFontFamily}`;
-  const textLines = wrapTextToLines(ctx, titleText, panelWidth - 110);
-  const lineHeight = titleSize * 1.28;
-  const textStartY = panelY + 152;
-
-  textLines.forEach((line, index) => {
-    ctx.fillText(line, width / 2, textStartY + index * lineHeight);
-  });
-  ctx.restore();
-
-  const phoneX = 128;
-  const phoneY = 600;
-  const phoneWidth = width - 256;
-  const phoneHeight = 1248;
-  const phoneRadius = 96;
+  const phoneWidth = width - 220;
+  const phoneHeight = 1400;
+  const phoneX = (width - phoneWidth) / 2;
+  const phoneY = hasTitle ? 440 : 260;
+  const phoneRadius = 104;
 
   ctx.save();
   const bodyGradient = ctx.createLinearGradient(phoneX, phoneY, phoneX + phoneWidth, phoneY + phoneHeight);
@@ -331,18 +270,8 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions) {
   if (media && mediaReady) {
     drawMediaCover(ctx, media, screenX, screenY, screenWidth, screenHeight);
   } else {
-    const emptyGradient = ctx.createLinearGradient(screenX, screenY, screenX, screenY + screenHeight);
-    emptyGradient.addColorStop(0, '#f8fafc');
-    emptyGradient.addColorStop(1, '#e2e8f0');
-    ctx.fillStyle = emptyGradient;
+    ctx.fillStyle = '#e5e7eb';
     ctx.fillRect(screenX, screenY, screenWidth, screenHeight);
-
-    ctx.fillStyle = '#64748b';
-    ctx.textAlign = 'center';
-    ctx.font = '600 34px "Noto Sans KR", sans-serif';
-    ctx.fillText('이미지 또는 영상을 업로드하세요', screenX + screenWidth / 2, screenY + screenHeight / 2 - 18);
-    ctx.font = '500 24px "Noto Sans KR", sans-serif';
-    ctx.fillText('출력은 입력 타입과 동일하게 생성됩니다', screenX + screenWidth / 2, screenY + screenHeight / 2 + 34);
   }
 
   ctx.restore();
@@ -876,7 +805,11 @@ function App() {
 
               <div className="space-y-3">
                 <Label>3. 상단 텍스트</Label>
-                <Textarea value={titleText} onChange={(event) => setTitleText(event.target.value)} />
+                <Textarea
+                  value={titleText}
+                  onChange={(event) => setTitleText(event.target.value)}
+                  placeholder="비워두면 상단 텍스트가 표시되지 않습니다."
+                />
 
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
