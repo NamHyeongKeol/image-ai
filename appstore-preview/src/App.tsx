@@ -87,7 +87,7 @@ interface Artifact {
   url: string;
 }
 
-interface ProjectDesignState {
+interface CanvasDesignState {
   backgroundMode: BackgroundMode;
   backgroundPrimary: string;
   backgroundSecondary: string;
@@ -101,6 +101,17 @@ interface ProjectDesignState {
   };
 }
 
+interface ProjectCanvasRecord {
+  id: string;
+  name: string;
+  state: CanvasDesignState;
+}
+
+interface ProjectDesignState {
+  canvases: ProjectCanvasRecord[];
+  currentCanvasId: string;
+}
+
 interface ProjectRecord {
   id: string;
   name: string;
@@ -109,7 +120,7 @@ interface ProjectRecord {
 }
 
 interface ProjectFilePayload {
-  version: 1;
+  version: 2;
   project: {
     id: string;
     name: string;
@@ -202,7 +213,7 @@ interface ProjectMediaRecord {
   updatedAt: string;
 }
 
-function createEmptyDesignState(): ProjectDesignState {
+function createEmptyCanvasState(): CanvasDesignState {
   return {
     backgroundMode: DEFAULTS.backgroundMode,
     backgroundPrimary: DEFAULTS.backgroundPrimary,
@@ -218,6 +229,15 @@ function createEmptyDesignState(): ProjectDesignState {
   };
 }
 
+function cloneCanvasState(state: CanvasDesignState): CanvasDesignState {
+  return {
+    ...state,
+    phoneOffset: { ...state.phoneOffset },
+    textBoxes: state.textBoxes.map((box) => ({ ...box })),
+    media: { ...state.media },
+  };
+}
+
 function createProjectId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `project-${crypto.randomUUID()}`;
@@ -226,16 +246,48 @@ function createProjectId() {
   return `project-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
 
-function createProjectRecord(name: string, state: ProjectDesignState = createEmptyDesignState()): ProjectRecord {
+function createCanvasId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `canvas-${crypto.randomUUID()}`;
+  }
+
+  return `canvas-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+function createCanvasRecord(name: string, state: CanvasDesignState = createEmptyCanvasState()): ProjectCanvasRecord {
+  return {
+    id: createCanvasId(),
+    name,
+    state: cloneCanvasState(state),
+  };
+}
+
+function createProjectDesignState(initialCanvas?: ProjectCanvasRecord): ProjectDesignState {
+  const firstCanvas = initialCanvas ?? createCanvasRecord('캔버스 1');
+  return {
+    canvases: [
+      {
+        id: firstCanvas.id,
+        name: firstCanvas.name,
+        state: cloneCanvasState(firstCanvas.state),
+      },
+    ],
+    currentCanvasId: firstCanvas.id,
+  };
+}
+
+function createProjectRecord(name: string, state: ProjectDesignState = createProjectDesignState()): ProjectRecord {
   return {
     id: createProjectId(),
     name,
     updatedAt: new Date().toISOString(),
     state: {
-      ...state,
-      phoneOffset: { ...state.phoneOffset },
-      textBoxes: state.textBoxes.map((box) => ({ ...box })),
-      media: { ...state.media },
+      currentCanvasId: state.currentCanvasId,
+      canvases: state.canvases.map((canvas) => ({
+        id: canvas.id,
+        name: canvas.name,
+        state: cloneCanvasState(canvas.state),
+      })),
     },
   };
 }
@@ -264,8 +316,106 @@ function createNextProjectName(projects: ProjectRecord[]) {
   return `프로젝트 ${index}`;
 }
 
+function createNextCanvasName(canvases: ProjectCanvasRecord[]) {
+  const existing = new Set(canvases.map((canvas) => canvas.name));
+  let index = canvases.length + 1;
+
+  while (existing.has(`캔버스 ${index}`)) {
+    index += 1;
+  }
+
+  return `캔버스 ${index}`;
+}
+
 function sanitizeFileNameSegment(name: string) {
   return name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 60) || 'project';
+}
+
+function buildProjectCanvasMediaKey(projectId: string, canvasId: string) {
+  return `${projectId}::${canvasId}`;
+}
+
+function sanitizeCanvasState(state: unknown): CanvasDesignState {
+  if (!state || typeof state !== 'object') {
+    return createEmptyCanvasState();
+  }
+
+  const fallback = createEmptyCanvasState();
+  const raw = state as Partial<CanvasDesignState>;
+  const rawMedia = raw.media;
+
+  return {
+    backgroundMode: raw.backgroundMode === 'gradient' ? 'gradient' : 'solid',
+    backgroundPrimary: typeof raw.backgroundPrimary === 'string' ? raw.backgroundPrimary : fallback.backgroundPrimary,
+    backgroundSecondary: typeof raw.backgroundSecondary === 'string' ? raw.backgroundSecondary : fallback.backgroundSecondary,
+    gradientAngle: typeof raw.gradientAngle === 'number' ? raw.gradientAngle : fallback.gradientAngle,
+    phoneOffset:
+      raw.phoneOffset && typeof raw.phoneOffset === 'object'
+        ? {
+            x: typeof raw.phoneOffset.x === 'number' ? raw.phoneOffset.x : 0,
+            y: typeof raw.phoneOffset.y === 'number' ? raw.phoneOffset.y : 0,
+          }
+        : { ...fallback.phoneOffset },
+    phoneScale: typeof raw.phoneScale === 'number' ? raw.phoneScale : fallback.phoneScale,
+    textBoxes: Array.isArray(raw.textBoxes)
+      ? raw.textBoxes
+          .filter((box): box is TextBoxModel => Boolean(box && typeof box === 'object'))
+          .map((box, index) => ({
+            id: typeof box.id === 'string' && box.id ? box.id : `text-legacy-${index}`,
+            text: typeof box.text === 'string' ? box.text : '',
+            x: typeof box.x === 'number' ? box.x : 0,
+            y: typeof box.y === 'number' ? box.y : 0,
+            width: typeof box.width === 'number' ? box.width : 320,
+            fontKey:
+              typeof box.fontKey === 'string' && FONT_OPTIONS.some((option) => option.key === box.fontKey)
+                ? box.fontKey
+                : FONT_OPTIONS[0].key,
+            fontSize: typeof box.fontSize === 'number' ? box.fontSize : 48,
+            color: typeof box.color === 'string' ? box.color : '#1f3b7c',
+          }))
+      : [],
+    media: {
+      kind: rawMedia?.kind === 'image' || rawMedia?.kind === 'video' ? rawMedia.kind : null,
+      name: typeof rawMedia?.name === 'string' ? rawMedia.name : '',
+    },
+  };
+}
+
+function sanitizeProjectState(state: unknown): ProjectDesignState {
+  if (!state || typeof state !== 'object') {
+    return createProjectDesignState();
+  }
+
+  const raw = state as { canvases?: unknown; currentCanvasId?: unknown };
+  if (Array.isArray(raw.canvases)) {
+    const canvases = raw.canvases
+      .filter((canvas): canvas is { id?: unknown; name?: unknown; state?: unknown } =>
+        Boolean(canvas && typeof canvas === 'object'),
+      )
+      .map((canvas, index) => ({
+        id: typeof canvas.id === 'string' && canvas.id ? canvas.id : createCanvasId(),
+        name: typeof canvas.name === 'string' && canvas.name.trim() ? canvas.name.trim() : `캔버스 ${index + 1}`,
+        state: sanitizeCanvasState(canvas.state ?? canvas),
+      }));
+
+    const safeCanvases = canvases.length > 0 ? canvases : [createCanvasRecord('캔버스 1')];
+    const requestedCurrentId = typeof raw.currentCanvasId === 'string' ? raw.currentCanvasId : safeCanvases[0].id;
+    const currentCanvasId = safeCanvases.some((canvas) => canvas.id === requestedCurrentId)
+      ? requestedCurrentId
+      : safeCanvases[0].id;
+
+    return {
+      canvases: safeCanvases.map((canvas) => ({
+        id: canvas.id,
+        name: canvas.name,
+        state: cloneCanvasState(canvas.state),
+      })),
+      currentCanvasId,
+    };
+  }
+
+  const legacyCanvas = createCanvasRecord('캔버스 1', sanitizeCanvasState(state));
+  return createProjectDesignState(legacyCanvas);
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -288,16 +438,24 @@ function parseStoredProjects(raw: string | null) {
       return [];
     }
 
-    return parsed.filter((item): item is ProjectRecord => {
-      return Boolean(
-        item &&
-          typeof item === 'object' &&
-          'id' in item &&
-          'name' in item &&
-          'updatedAt' in item &&
-          'state' in item,
-      );
-    });
+    return parsed
+      .filter(
+        (item): item is { id?: unknown; name?: unknown; updatedAt?: unknown; state?: unknown } =>
+          Boolean(item && typeof item === 'object'),
+      )
+      .map((item) => {
+        if (typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.updatedAt !== 'string') {
+          return null;
+        }
+
+        return {
+          id: item.id,
+          name: item.name,
+          updatedAt: item.updatedAt,
+          state: sanitizeProjectState(item.state),
+        } satisfies ProjectRecord;
+      })
+      .filter((item): item is ProjectRecord => Boolean(item));
   } catch {
     return [];
   }
@@ -888,7 +1046,10 @@ function App() {
   const suppressCanvasClickRef = useRef(false);
   const uploadDropDepthRef = useRef(0);
   const canvasDropDepthRef = useRef(0);
-  const nextTextBoxIdRef = useRef(getNextTextBoxSerial(initialProject.state.textBoxes));
+  const initialCanvas =
+    initialProject.state.canvases.find((canvas) => canvas.id === initialProject.state.currentCanvasId) ??
+    initialProject.state.canvases[0];
+  const nextTextBoxIdRef = useRef(getNextTextBoxSerial(initialCanvas.state.textBoxes));
   const autoSaveErrorNotifiedRef = useRef(false);
   const mediaRestoreTokenRef = useRef(0);
   const loadedProjectIdRef = useRef<string | null>(null);
@@ -896,6 +1057,7 @@ function App() {
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
+  const [currentCanvasId, setCurrentCanvasId] = useState(initialCanvas.id);
   const [connectedSaveDirectory, setConnectedSaveDirectory] = useState<DirectoryHandleLike | null>(null);
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState('');
 
@@ -903,15 +1065,15 @@ function App() {
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
   const [assetName, setAssetName] = useState('');
 
-  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(initialProject.state.backgroundMode);
-  const [backgroundPrimary, setBackgroundPrimary] = useState(initialProject.state.backgroundPrimary);
-  const [backgroundSecondary, setBackgroundSecondary] = useState(initialProject.state.backgroundSecondary);
-  const [gradientAngle, setGradientAngle] = useState(initialProject.state.gradientAngle);
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(initialCanvas.state.backgroundMode);
+  const [backgroundPrimary, setBackgroundPrimary] = useState(initialCanvas.state.backgroundPrimary);
+  const [backgroundSecondary, setBackgroundSecondary] = useState(initialCanvas.state.backgroundSecondary);
+  const [gradientAngle, setGradientAngle] = useState(initialCanvas.state.gradientAngle);
 
-  const [phoneOffset, setPhoneOffset] = useState<Offset>({ ...initialProject.state.phoneOffset });
-  const [phoneScale, setPhoneScale] = useState(initialProject.state.phoneScale);
+  const [phoneOffset, setPhoneOffset] = useState<Offset>({ ...initialCanvas.state.phoneOffset });
+  const [phoneScale, setPhoneScale] = useState(initialCanvas.state.phoneScale);
 
-  const [textBoxes, setTextBoxes] = useState<TextBoxModel[]>(initialProject.state.textBoxes.map((box) => ({ ...box })));
+  const [textBoxes, setTextBoxes] = useState<TextBoxModel[]>(initialCanvas.state.textBoxes.map((box) => ({ ...box })));
   const [selectedTextBoxId, setSelectedTextBoxId] = useState<string | null>(null);
   const [isPlacingTextBox, setIsPlacingTextBox] = useState(false);
   const [hasCopiedTextBox, setHasCopiedTextBox] = useState(false);
@@ -936,7 +1098,7 @@ function App() {
     [projects, currentProjectId],
   );
 
-  const currentDesignState = useMemo<ProjectDesignState>(
+  const currentCanvasState = useMemo<CanvasDesignState>(
     () => ({
       backgroundMode,
       backgroundPrimary,
@@ -962,6 +1124,43 @@ function App() {
       textBoxes,
     ],
   );
+
+  const currentProjectState = useMemo<ProjectDesignState | null>(() => {
+    if (!currentProject) {
+      return null;
+    }
+
+    const exists = currentProject.state.canvases.some((canvas) => canvas.id === currentCanvasId);
+    const targetCanvasId = exists ? currentCanvasId : currentProject.state.currentCanvasId;
+    const canvases = currentProject.state.canvases.map((canvas) =>
+      canvas.id === targetCanvasId
+        ? {
+            ...canvas,
+            state: cloneCanvasState(currentCanvasState),
+          }
+        : canvas,
+    );
+
+    return {
+      canvases,
+      currentCanvasId: targetCanvasId,
+    };
+  }, [currentCanvasId, currentCanvasState, currentProject]);
+
+  const currentProjectCanvases = useMemo(() => currentProjectState?.canvases ?? [], [currentProjectState]);
+
+  const currentCanvas = useMemo(
+    () => currentProjectCanvases.find((canvas) => canvas.id === currentCanvasId) ?? null,
+    [currentCanvasId, currentProjectCanvases],
+  );
+
+  const currentMediaStorageKey = useMemo(() => {
+    if (!currentProjectId || !currentCanvasId) {
+      return '';
+    }
+
+    return buildProjectCanvasMediaKey(currentProjectId, currentCanvasId);
+  }, [currentCanvasId, currentProjectId]);
 
   const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
     const canvas = previewCanvasRef.current;
@@ -1074,41 +1273,71 @@ function App() {
   }, []);
 
   const applyProjectState = useCallback(
-    (project: ProjectRecord) => {
-      setBackgroundMode(project.state.backgroundMode);
-      setBackgroundPrimary(project.state.backgroundPrimary);
-      setBackgroundSecondary(project.state.backgroundSecondary);
-      setGradientAngle(project.state.gradientAngle);
-      setPhoneOffset({ ...project.state.phoneOffset });
-      setPhoneScale(project.state.phoneScale);
-      setTextBoxes(project.state.textBoxes.map((box) => ({ ...box })));
+    (project: ProjectRecord, preferredCanvasId?: string) => {
+      const targetCanvas =
+        project.state.canvases.find((canvas) => canvas.id === (preferredCanvasId ?? project.state.currentCanvasId)) ??
+        project.state.canvases[0];
+
+      if (!targetCanvas) {
+        return;
+      }
+
+      const targetState = targetCanvas.state;
+      setCurrentCanvasId(targetCanvas.id);
+      setBackgroundMode(targetState.backgroundMode);
+      setBackgroundPrimary(targetState.backgroundPrimary);
+      setBackgroundSecondary(targetState.backgroundSecondary);
+      setGradientAngle(targetState.gradientAngle);
+      setPhoneOffset({ ...targetState.phoneOffset });
+      setPhoneScale(targetState.phoneScale);
+      setTextBoxes(targetState.textBoxes.map((box) => ({ ...box })));
       setSelectedTextBoxId(null);
       setIsPlacingTextBox(false);
-      nextTextBoxIdRef.current = getNextTextBoxSerial(project.state.textBoxes);
+      nextTextBoxIdRef.current = getNextTextBoxSerial(targetState.textBoxes);
     },
     [],
   );
 
   const restoreProjectMedia = useCallback(
-    async (project: ProjectRecord) => {
+    async (project: ProjectRecord, preferredCanvasId?: string) => {
+      const targetCanvas =
+        project.state.canvases.find((canvas) => canvas.id === (preferredCanvasId ?? project.state.currentCanvasId)) ??
+        project.state.canvases[0];
+      if (!targetCanvas) {
+        return;
+      }
+
+      const mediaKey = buildProjectCanvasMediaKey(project.id, targetCanvas.id);
       const token = mediaRestoreTokenRef.current + 1;
       mediaRestoreTokenRef.current = token;
       clearLoadedMedia();
       setErrorMessage('');
 
       if (typeof indexedDB === 'undefined') {
-        setStatusMessage(`${project.name} 프로젝트를 불러왔습니다.`);
+        setStatusMessage(`${project.name} / ${targetCanvas.name} 캔버스를 불러왔습니다.`);
         return;
       }
 
       try {
-        const record = await readProjectMediaRecord(project.id);
+        let record = await readProjectMediaRecord(mediaKey);
+        const firstCanvasId = project.state.canvases[0]?.id ?? '';
+        if (!record && targetCanvas.id === firstCanvasId) {
+          record = await readProjectMediaRecord(project.id);
+          if (record) {
+            void saveProjectMediaRecord({
+              ...record,
+              projectId: mediaKey,
+              updatedAt: new Date().toISOString(),
+            }).catch(() => undefined);
+          }
+        }
+
         if (token !== mediaRestoreTokenRef.current) {
           return;
         }
 
         if (!record) {
-          setStatusMessage(`${project.name} 프로젝트를 불러왔습니다.`);
+          setStatusMessage(`${project.name} / ${targetCanvas.name} 캔버스를 불러왔습니다.`);
           return;
         }
 
@@ -1132,7 +1361,7 @@ function App() {
           videoRef.current = null;
           imageRef.current = image;
           setAssetKind('image');
-          setStatusMessage(`${project.name} 프로젝트를 불러왔고, 저장된 이미지를 복원했습니다.`);
+          setStatusMessage(`${project.name} / ${targetCanvas.name}: 저장된 이미지를 복원했습니다.`);
           return;
         }
 
@@ -1159,7 +1388,7 @@ function App() {
         imageRef.current = null;
         videoRef.current = video;
         setAssetKind('video');
-        setStatusMessage(`${project.name} 프로젝트를 불러왔고, 저장된 영상을 복원했습니다.`);
+        setStatusMessage(`${project.name} / ${targetCanvas.name}: 저장된 영상을 복원했습니다.`);
       } catch (error) {
         if (token !== mediaRestoreTokenRef.current) {
           return;
@@ -1167,7 +1396,7 @@ function App() {
 
         clearLoadedMedia();
         setErrorMessage(error instanceof Error ? error.message : '미디어 복원에 실패했습니다.');
-        setStatusMessage(`${project.name} 프로젝트를 불러왔습니다. 미디어는 다시 업로드해 주세요.`);
+        setStatusMessage(`${project.name} / ${targetCanvas.name} 캔버스를 불러왔습니다. 미디어는 다시 업로드해 주세요.`);
       }
     },
     [clearLoadedMedia, setAssetObjectUrl],
@@ -1176,7 +1405,7 @@ function App() {
   const handleSelectProject = useCallback(
     (nextProjectId: string) => {
       const nextProject = projects.find((project) => project.id === nextProjectId);
-      if (!nextProject) {
+      if (!nextProject || !currentProjectState) {
         return;
       }
 
@@ -1187,17 +1416,22 @@ function App() {
             ? {
                 ...project,
                 updatedAt: now,
-                state: currentDesignState,
+                state: currentProjectState,
               }
             : project,
         ),
       );
       setCurrentProjectId(nextProject.id);
+      setCurrentCanvasId(nextProject.state.currentCanvasId);
     },
-    [currentDesignState, currentProjectId, projects],
+    [currentProjectId, currentProjectState, projects],
   );
 
   const handleCreateProject = useCallback(() => {
+    if (!currentProjectState) {
+      return;
+    }
+
     const now = new Date().toISOString();
     const newProject = createProjectRecord(createNextProjectName(projects));
     setProjects((previous) => [
@@ -1206,14 +1440,68 @@ function App() {
           ? {
               ...project,
               updatedAt: now,
-              state: currentDesignState,
+              state: currentProjectState,
             }
           : project,
       ),
       newProject,
     ]);
     setCurrentProjectId(newProject.id);
-  }, [currentDesignState, currentProjectId, projects]);
+    setCurrentCanvasId(newProject.state.currentCanvasId);
+  }, [currentProjectId, currentProjectState, projects]);
+
+  const handleSelectCanvas = useCallback(
+    (nextCanvasId: string) => {
+      if (!currentProject || !currentProjectState || nextCanvasId === currentCanvasId) {
+        return;
+      }
+
+      if (!currentProjectState.canvases.some((canvas) => canvas.id === nextCanvasId)) {
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const nextState: ProjectDesignState = {
+        ...currentProjectState,
+        currentCanvasId: nextCanvasId,
+      };
+      const nextProject: ProjectRecord = {
+        ...currentProject,
+        updatedAt: now,
+        state: nextState,
+      };
+
+      setProjects((previous) =>
+        previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+      );
+      applyProjectState(nextProject, nextCanvasId);
+      void restoreProjectMedia(nextProject, nextCanvasId);
+    },
+    [applyProjectState, currentCanvasId, currentProject, currentProjectState, restoreProjectMedia],
+  );
+
+  const handleCreateCanvas = useCallback(() => {
+    if (!currentProject || !currentProjectState) {
+      return;
+    }
+
+    const newCanvas = createCanvasRecord(createNextCanvasName(currentProjectState.canvases));
+    const now = new Date().toISOString();
+    const nextState: ProjectDesignState = {
+      canvases: [...currentProjectState.canvases, newCanvas],
+      currentCanvasId: newCanvas.id,
+    };
+    const nextProject: ProjectRecord = {
+      ...currentProject,
+      updatedAt: now,
+      state: nextState,
+    };
+
+    setProjects((previous) => previous.map((project) => (project.id === currentProject.id ? nextProject : project)));
+    applyProjectState(nextProject, newCanvas.id);
+    void restoreProjectMedia(nextProject, newCanvas.id);
+    setStatusMessage('새 캔버스를 추가했습니다.');
+  }, [applyProjectState, currentProject, currentProjectState, restoreProjectMedia]);
 
   const persistProjectFileToDirectory = useCallback(
     async (project: ProjectRecord) => {
@@ -1222,7 +1510,7 @@ function App() {
       }
 
       const payload: ProjectFilePayload = {
-        version: 1,
+        version: 2,
         project: {
           id: project.id,
           name: project.name,
@@ -1476,6 +1764,10 @@ function App() {
   }, [applyProjectState, currentProjectId, projects, restoreProjectMedia]);
 
   useEffect(() => {
+    if (!currentProjectState) {
+      return;
+    }
+
     const timer = window.setTimeout(() => {
       const now = new Date().toISOString();
       setProjects((previous) =>
@@ -1484,7 +1776,7 @@ function App() {
             ? {
                 ...project,
                 updatedAt: now,
-                state: currentDesignState,
+                state: currentProjectState,
               }
             : project,
         ),
@@ -1494,7 +1786,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [currentDesignState, currentProjectId]);
+  }, [currentProjectId, currentProjectState]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1565,6 +1857,11 @@ function App() {
         return;
       }
 
+      if (!currentMediaStorageKey) {
+        setErrorMessage('캔버스가 선택되지 않았습니다. 캔버스를 다시 선택해 주세요.');
+        return;
+      }
+
       setErrorMessage('');
       setStatusMessage('미디어를 불러오는 중입니다...');
       setArtifact(null);
@@ -1593,7 +1890,7 @@ function App() {
           setAssetKind('image');
           setStatusMessage('이미지 업로드 완료. PNG로 출력됩니다.');
           void saveProjectMediaRecord({
-            projectId: currentProjectId,
+            projectId: currentMediaStorageKey,
             kind: 'image',
             name: file.name,
             type: file.type,
@@ -1627,7 +1924,7 @@ function App() {
         setAssetKind('video');
         setStatusMessage('영상 업로드 완료. 영상으로 출력됩니다.');
         void saveProjectMediaRecord({
-          projectId: currentProjectId,
+          projectId: currentMediaStorageKey,
           kind: 'video',
           name: file.name,
           type: file.type,
@@ -1645,10 +1942,12 @@ function App() {
         setAssetObjectUrl(null);
         setErrorMessage(error instanceof Error ? error.message : '업로드 처리에 실패했습니다.');
         setStatusMessage('파일을 다시 선택해 주세요.');
-        void removeProjectMediaRecord(currentProjectId).catch(() => undefined);
+        if (currentMediaStorageKey) {
+          void removeProjectMediaRecord(currentMediaStorageKey).catch(() => undefined);
+        }
       }
     },
-    [currentProjectId, setAssetObjectUrl],
+    [currentMediaStorageKey, setAssetObjectUrl],
   );
 
   const handleFileChange = useCallback(
@@ -2251,6 +2550,42 @@ function App() {
           </div>
         </header>
 
+        <section className="mt-4 rounded-2xl border border-zinc-200/80 bg-white/90 px-4 py-3 shadow-sm">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-zinc-800">캔버스 목록</p>
+            <p className="text-xs text-zinc-500">{currentCanvas ? `${currentCanvas.name} 편집 중` : '캔버스 없음'}</p>
+          </div>
+          <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+            {currentProjectCanvases.map((canvas) => {
+              const isActive = canvas.id === currentCanvasId;
+              const kindLabel =
+                canvas.state.media.kind === 'video' ? '영상' : canvas.state.media.kind === 'image' ? '이미지' : '미디어 없음';
+              return (
+                <button
+                  key={canvas.id}
+                  type="button"
+                  onClick={() => handleSelectCanvas(canvas.id)}
+                  className={`min-w-[220px] rounded-lg border px-3 py-2 text-left transition ${
+                    isActive ? 'border-blue-400 bg-blue-50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-700'
+                  }`}
+                >
+                  <p className="truncate text-sm font-semibold">{canvas.name}</p>
+                  <p className="mt-1 truncate text-xs opacity-80">{canvas.state.media.name || '빈 캔버스'}</p>
+                  <p className="mt-1 text-[11px] opacity-70">{kindLabel}</p>
+                </button>
+              );
+            })}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleCreateCanvas}
+              className="min-w-[150px] shrink-0 self-stretch"
+            >
+              <Plus className="h-4 w-4" /> 캔버스 추가
+            </Button>
+          </div>
+        </section>
+
         <div className="mt-6 grid gap-6 xl:grid-cols-[430px_minmax(0,1fr)]">
           <Card className="border-zinc-200/80 bg-white/90">
             <CardHeader>
@@ -2272,6 +2607,7 @@ function App() {
 
               <div className="space-y-3">
                 <Label>1. iPhone 화면 미디어</Label>
+                {currentCanvas && <p className="text-xs text-zinc-500">{currentCanvas.name} 전용 미디어</p>}
                 <input
                   ref={fileInputRef}
                   type="file"
