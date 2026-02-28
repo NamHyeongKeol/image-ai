@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# local project save files
+.project-saves/
+*.appstore-preview-project.json

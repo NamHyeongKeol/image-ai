@@ -5,7 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Download, Film, Image as ImageIcon, Palette, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
+import { Download, Film, Image as ImageIcon, Palette, Plus, RotateCcw, Save, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -73,6 +73,33 @@ interface Artifact {
   mimeType: string;
   fileName: string;
   url: string;
+}
+
+interface SavedMediaPayload {
+  name: string;
+  type: string;
+  dataUrl: string;
+}
+
+interface SavedProjectPayload {
+  version: 1;
+  savedAt: string;
+  canvas: {
+    width: number;
+    height: number;
+  };
+  background: {
+    mode: BackgroundMode;
+    primary: string;
+    secondary: string;
+    gradientAngle: number;
+  };
+  phone: {
+    offset: Offset;
+    scale: number;
+  };
+  textBoxes: TextBoxModel[];
+  media: SavedMediaPayload | null;
 }
 
 interface DrawOptions {
@@ -564,6 +591,15 @@ async function blobFromCanvas(canvas: HTMLCanvasElement) {
   });
 }
 
+async function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('미디어 파일 인코딩에 실패했습니다.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function App() {
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -582,6 +618,7 @@ function App() {
   const [assetKind, setAssetKind] = useState<MediaKind>(null);
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
   const [assetName, setAssetName] = useState('');
+  const [assetFile, setAssetFile] = useState<File | null>(null);
 
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(DEFAULTS.backgroundMode);
   const [backgroundPrimary, setBackgroundPrimary] = useState(DEFAULTS.backgroundPrimary);
@@ -833,6 +870,7 @@ function App() {
       const nextUrl = URL.createObjectURL(file);
       setAssetObjectUrl(nextUrl);
       setAssetName(file.name);
+      setAssetFile(file);
 
       try {
         if (file.type.startsWith('image/')) {
@@ -878,6 +916,7 @@ function App() {
         videoRef.current = null;
         setAssetKind(null);
         setAssetName('');
+        setAssetFile(null);
         setAssetObjectUrl(null);
         setErrorMessage(error instanceof Error ? error.message : '업로드 처리에 실패했습니다.');
         setStatusMessage('파일을 다시 선택해 주세요.');
@@ -1396,6 +1435,102 @@ function App() {
     textBoxes,
   ]);
 
+  const handleSaveProjectFile = useCallback(async () => {
+    setErrorMessage('');
+
+    try {
+      const mediaPayload = assetFile
+        ? {
+            name: assetFile.name,
+            type: assetFile.type,
+            dataUrl: await fileToDataUrl(assetFile),
+          }
+        : null;
+
+      const payload: SavedProjectPayload = {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        canvas: {
+          width: CANVAS_PRESET.width,
+          height: CANVAS_PRESET.height,
+        },
+        background: {
+          mode: backgroundMode,
+          primary: backgroundPrimary,
+          secondary: backgroundSecondary,
+          gradientAngle,
+        },
+        phone: {
+          offset: phoneOffset,
+          scale: phoneScale,
+        },
+        textBoxes,
+        media: mediaPayload,
+      };
+
+      const suggestedName = `appstore-preview-${Date.now()}.appstore-preview-project.json`;
+      const projectBlob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: 'application/json',
+      });
+
+      const pickerWindow = window as Window & {
+        showSaveFilePicker?: (options?: {
+          suggestedName?: string;
+          types?: Array<{
+            description?: string;
+            accept: Record<string, string[]>;
+          }>;
+        }) => Promise<{
+          createWritable: () => Promise<{
+            write: (data: Blob) => Promise<void>;
+            close: () => Promise<void>;
+          }>;
+        }>;
+      };
+
+      if (typeof pickerWindow.showSaveFilePicker === 'function') {
+        const handle = await pickerWindow.showSaveFilePicker({
+          suggestedName,
+          types: [
+            {
+              description: 'Appstore Preview Project',
+              accept: {
+                'application/json': ['.json'],
+              },
+            },
+          ],
+        });
+
+        const writable = await handle.createWritable();
+        await writable.write(projectBlob);
+        await writable.close();
+      } else {
+        const downloadUrl = URL.createObjectURL(projectBlob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = suggestedName;
+        link.click();
+        URL.revokeObjectURL(downloadUrl);
+      }
+
+      setStatusMessage(
+        '프로젝트 파일 저장 완료. 파일 저장 창에서 appstore-preview/.project-saves 경로를 선택하면 프로젝트 폴더에 저장됩니다.',
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '프로젝트 파일 저장에 실패했습니다.');
+      setStatusMessage('저장 경로를 다시 선택해 주세요.');
+    }
+  }, [
+    assetFile,
+    backgroundMode,
+    backgroundPrimary,
+    backgroundSecondary,
+    gradientAngle,
+    phoneOffset,
+    phoneScale,
+    textBoxes,
+  ]);
+
   const handleExport = useCallback(async () => {
     if (!assetKind) {
       setErrorMessage('먼저 이미지 또는 영상을 업로드해 주세요.');
@@ -1692,6 +1827,10 @@ function App() {
                 <Button type="button" variant="outline" onClick={resetStyle}>
                   <RotateCcw className="h-4 w-4" />
                   배경/프레임 초기화
+                </Button>
+                <Button type="button" variant="outline" onClick={handleSaveProjectFile}>
+                  <Save className="h-4 w-4" />
+                  프로젝트 저장(JSON)
                 </Button>
                 <Button type="button" onClick={handleExport} disabled={isExporting || !assetKind}>
                   <Download className="h-4 w-4" />
