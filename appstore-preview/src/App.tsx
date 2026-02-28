@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type {
+  ChangeEvent,
+  DragEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import { Download, Film, Image as ImageIcon, Palette, RotateCcw, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,6 +16,26 @@ type MediaKind = 'image' | 'video' | null;
 type BackgroundMode = 'solid' | 'gradient';
 type ArtifactKind = 'image' | 'video';
 type FontKey = (typeof FONT_OPTIONS)[number]['key'];
+type DragTarget = 'phone' | 'text';
+
+interface Offset {
+  x: number;
+  y: number;
+}
+
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface Range2D {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+}
 
 interface Artifact {
   kind: ArtifactKind;
@@ -30,7 +55,43 @@ interface DrawOptions {
   titleFontFamily: string;
   titleColor: string;
   titleSize: number;
+  phoneOffset: Offset;
+  textOffset: Offset;
   media: HTMLImageElement | HTMLVideoElement | null;
+}
+
+interface TextLayout {
+  lines: string[];
+  lineHeight: number;
+  drawX: number;
+  drawStartY: number;
+  bounds: Rect;
+  range: Range2D;
+  appliedOffset: Offset;
+}
+
+interface PhoneLayout {
+  body: Rect;
+  screen: Rect;
+  radius: number;
+  screenRadius: number;
+  range: Range2D;
+  appliedOffset: Offset;
+}
+
+interface LayoutMetrics {
+  hasTitle: boolean;
+  text: TextLayout | null;
+  phone: PhoneLayout;
+}
+
+interface DragSession {
+  target: DragTarget;
+  pointerId: number;
+  startPoint: Offset;
+  startPhoneOffset: Offset;
+  startTextOffset: Offset;
+  moved: boolean;
 }
 
 const CANVAS_PRESET = { label: '886 x 1920 (기본)', width: 886, height: 1920 } as const;
@@ -52,6 +113,47 @@ const DEFAULTS = {
   backgroundSecondary: '#dbeafe',
   gradientAngle: 26,
 };
+
+function clamp(value: number, min: number, max: number) {
+  if (min > max) {
+    const center = (min + max) / 2;
+    return center;
+  }
+
+  return Math.min(max, Math.max(min, value));
+}
+
+function pointInRect(point: Offset, rect: Rect) {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+function expandRect(rect: Rect, padding: number): Rect {
+  return {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2,
+  };
+}
+
+function getFirstMediaFile(files: FileList | null) {
+  if (!files) {
+    return null;
+  }
+
+  for (const file of Array.from(files)) {
+    if (file.type.startsWith('image/') || file.type.startsWith('video/')) {
+      return file;
+    }
+  }
+
+  return null;
+}
 
 function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   const radius = Math.min(r, w / 2, h / 2);
@@ -187,7 +289,101 @@ function wrapTextToLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: 
   return lines;
 }
 
-function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions) {
+function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOptions): LayoutMetrics {
+  const { width, height, titleText, titleFontFamily, titleSize, phoneOffset, textOffset } = options;
+  const hasTitle = titleText.trim().length > 0;
+
+  const phoneWidth = width - 220;
+  const phoneHeight = 1400;
+  const phoneRadius = 104;
+  const basePhoneX = (width - phoneWidth) / 2;
+  const basePhoneY = hasTitle ? 440 : 260;
+
+  const phoneRange: Range2D = {
+    xMin: 22 - basePhoneX,
+    xMax: width - phoneWidth - 22 - basePhoneX,
+    yMin: 90 - basePhoneY,
+    yMax: height - phoneHeight - 22 - basePhoneY,
+  };
+
+  const appliedPhoneOffset: Offset = {
+    x: clamp(phoneOffset.x, phoneRange.xMin, phoneRange.xMax),
+    y: clamp(phoneOffset.y, phoneRange.yMin, phoneRange.yMax),
+  };
+
+  const phoneX = basePhoneX + appliedPhoneOffset.x;
+  const phoneY = basePhoneY + appliedPhoneOffset.y;
+
+  const screenInset = 22;
+  const screenX = phoneX + screenInset;
+  const screenY = phoneY + screenInset;
+  const screenWidth = phoneWidth - screenInset * 2;
+  const screenHeight = phoneHeight - screenInset * 2;
+
+  let textLayout: TextLayout | null = null;
+
+  if (hasTitle) {
+    ctx.save();
+    ctx.font = `800 ${titleSize}px ${titleFontFamily}`;
+
+    const textLines = wrapTextToLines(ctx, titleText, width - 140);
+    const lineHeight = titleSize * 1.2;
+    const baseTextX = width / 2;
+    const baseTextY = 210;
+    const maxLineWidth = Math.max(...textLines.map((line) => ctx.measureText(line || ' ').width), 1);
+
+    const blockTopBase = baseTextY - titleSize * 0.86;
+    const blockHeight = titleSize + (textLines.length - 1) * lineHeight;
+
+    const textRange: Range2D = {
+      xMin: 24 + maxLineWidth / 2 - baseTextX,
+      xMax: width - 24 - maxLineWidth / 2 - baseTextX,
+      yMin: 24 - blockTopBase,
+      yMax: height - 24 - (blockTopBase + blockHeight),
+    };
+
+    const appliedTextOffset: Offset = {
+      x: clamp(textOffset.x, textRange.xMin, textRange.xMax),
+      y: clamp(textOffset.y, textRange.yMin, textRange.yMax),
+    };
+
+    const drawX = baseTextX + appliedTextOffset.x;
+    const drawStartY = baseTextY + appliedTextOffset.y;
+    const blockTop = blockTopBase + appliedTextOffset.y;
+
+    textLayout = {
+      lines: textLines,
+      lineHeight,
+      drawX,
+      drawStartY,
+      range: textRange,
+      appliedOffset: appliedTextOffset,
+      bounds: {
+        x: drawX - maxLineWidth / 2 - 18,
+        y: blockTop - 12,
+        width: maxLineWidth + 36,
+        height: blockHeight + 24,
+      },
+    };
+
+    ctx.restore();
+  }
+
+  return {
+    hasTitle,
+    text: textLayout,
+    phone: {
+      body: { x: phoneX, y: phoneY, width: phoneWidth, height: phoneHeight },
+      screen: { x: screenX, y: screenY, width: screenWidth, height: screenHeight },
+      radius: phoneRadius,
+      screenRadius: 76,
+      range: phoneRange,
+      appliedOffset: appliedPhoneOffset,
+    },
+  };
+}
+
+function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): LayoutMetrics {
   const {
     width,
     height,
@@ -195,44 +391,37 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions) {
     backgroundPrimary,
     backgroundSecondary,
     gradientAngle,
-    titleText,
     titleFontFamily,
     titleColor,
     titleSize,
     media,
   } = options;
 
-  fillBackground(ctx, width, height, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle);
-  const hasTitle = titleText.trim().length > 0;
+  const layout = computeLayoutMetrics(ctx, options);
 
-  if (hasTitle) {
+  fillBackground(ctx, width, height, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle);
+
+  if (layout.text) {
     ctx.save();
     ctx.textAlign = 'center';
     ctx.fillStyle = titleColor;
     ctx.font = `800 ${titleSize}px ${titleFontFamily}`;
-    const textLines = wrapTextToLines(ctx, titleText, width - 140);
-    const lineHeight = titleSize * 1.2;
-    const textStartY = 210;
 
-    textLines.forEach((line, index) => {
-      ctx.fillText(line, width / 2, textStartY + index * lineHeight);
+    layout.text.lines.forEach((line, index) => {
+      ctx.fillText(line, layout.text!.drawX, layout.text!.drawStartY + index * layout.text!.lineHeight);
     });
     ctx.restore();
   }
 
-  const phoneWidth = width - 220;
-  const phoneHeight = 1400;
-  const phoneX = (width - phoneWidth) / 2;
-  const phoneY = hasTitle ? 440 : 260;
-  const phoneRadius = 104;
+  const { body, screen, radius, screenRadius } = layout.phone;
 
   ctx.save();
-  const bodyGradient = ctx.createLinearGradient(phoneX, phoneY, phoneX + phoneWidth, phoneY + phoneHeight);
+  const bodyGradient = ctx.createLinearGradient(body.x, body.y, body.x + body.width, body.y + body.height);
   bodyGradient.addColorStop(0, '#0f172a');
   bodyGradient.addColorStop(0.5, '#111827');
   bodyGradient.addColorStop(1, '#374151');
 
-  roundedRectPath(ctx, phoneX, phoneY, phoneWidth, phoneHeight, phoneRadius);
+  roundedRectPath(ctx, body.x, body.y, body.width, body.height, radius);
   ctx.fillStyle = bodyGradient;
   ctx.fill();
 
@@ -241,24 +430,17 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions) {
   ctx.stroke();
 
   ctx.fillStyle = '#64748b';
-  roundedRectPath(ctx, phoneX - 5, phoneY + 292, 6, 110, 4);
+  roundedRectPath(ctx, body.x - 5, body.y + 292, 6, 110, 4);
   ctx.fill();
-  roundedRectPath(ctx, phoneX - 5, phoneY + 436, 6, 68, 4);
+  roundedRectPath(ctx, body.x - 5, body.y + 436, 6, 68, 4);
   ctx.fill();
-  roundedRectPath(ctx, phoneX + phoneWidth - 1, phoneY + 350, 6, 140, 4);
+  roundedRectPath(ctx, body.x + body.width - 1, body.y + 350, 6, 140, 4);
   ctx.fill();
 
-  const screenInset = 22;
-  const screenX = phoneX + screenInset;
-  const screenY = phoneY + screenInset;
-  const screenWidth = phoneWidth - screenInset * 2;
-  const screenHeight = phoneHeight - screenInset * 2;
-  const screenRadius = 76;
-
-  roundedRectPath(ctx, screenX, screenY, screenWidth, screenHeight, screenRadius);
+  roundedRectPath(ctx, screen.x, screen.y, screen.width, screen.height, screenRadius);
   ctx.clip();
   ctx.fillStyle = '#dfe5ee';
-  ctx.fillRect(screenX, screenY, screenWidth, screenHeight);
+  ctx.fillRect(screen.x, screen.y, screen.width, screen.height);
 
   const mediaReady =
     media instanceof HTMLVideoElement
@@ -268,19 +450,21 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions) {
         : false;
 
   if (media && mediaReady) {
-    drawMediaCover(ctx, media, screenX, screenY, screenWidth, screenHeight);
+    drawMediaCover(ctx, media, screen.x, screen.y, screen.width, screen.height);
   } else {
     ctx.fillStyle = '#e5e7eb';
-    ctx.fillRect(screenX, screenY, screenWidth, screenHeight);
+    ctx.fillRect(screen.x, screen.y, screen.width, screen.height);
   }
 
   ctx.restore();
 
   ctx.save();
-  roundedRectPath(ctx, screenX + (screenWidth - 194) / 2, screenY + 14, 194, 46, 23);
+  roundedRectPath(ctx, screen.x + (screen.width - 194) / 2, screen.y + 14, 194, 46, 23);
   ctx.fillStyle = '#020617';
   ctx.fill();
   ctx.restore();
+
+  return layout;
 }
 
 function pickRecorderMimeType() {
@@ -314,6 +498,11 @@ function App() {
   const rafRef = useRef<number | null>(null);
   const assetUrlRef = useRef<string | null>(null);
   const artifactUrlRef = useRef<string | null>(null);
+  const layoutRef = useRef<LayoutMetrics | null>(null);
+  const dragSessionRef = useRef<DragSession | null>(null);
+  const suppressCanvasClickRef = useRef(false);
+  const uploadDropDepthRef = useRef(0);
+  const canvasDropDepthRef = useRef(0);
 
   const [assetKind, setAssetKind] = useState<MediaKind>(null);
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
@@ -329,15 +518,47 @@ function App() {
   const [backgroundSecondary, setBackgroundSecondary] = useState(DEFAULTS.backgroundSecondary);
   const [gradientAngle, setGradientAngle] = useState(DEFAULTS.gradientAngle);
 
+  const [phoneOffset, setPhoneOffset] = useState<Offset>({ x: 0, y: 0 });
+  const [textOffset, setTextOffset] = useState<Offset>({ x: 0, y: 0 });
+
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isUploadDropActive, setIsUploadDropActive] = useState(false);
+  const [isCanvasDropActive, setIsCanvasDropActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [statusMessage, setStatusMessage] = useState('이미지 또는 영상을 업로드해 주세요.');
+  const [statusMessage, setStatusMessage] = useState(
+    '이미지/영상 업로드 후 iPhone 프레임과 상단 텍스트를 드래그해 위치를 조정할 수 있습니다.',
+  );
 
   const selectedFont = useMemo(
     () => FONT_OPTIONS.find((option) => option.key === titleFontKey) ?? FONT_OPTIONS[0],
     [titleFontKey],
   );
+
+  const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) {
+      return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return null;
+    }
+
+    return {
+      x: ((clientX - rect.left) / rect.width) * canvas.width,
+      y: ((clientY - rect.top) / rect.height) * canvas.height,
+    };
+  }, []);
+
+  const isPointInsidePhoneScreen = useCallback((point: Offset | null) => {
+    if (!point || !layoutRef.current) {
+      return false;
+    }
+
+    return pointInRect(point, layoutRef.current.phone.screen);
+  }, []);
 
   const setAssetObjectUrl = useCallback((nextUrl: string | null) => {
     if (assetUrlRef.current) {
@@ -381,7 +602,7 @@ function App() {
 
     const media = assetKind === 'video' ? videoRef.current : imageRef.current;
 
-    drawComposition(ctx, {
+    const layout = drawComposition(ctx, {
       width: CANVAS_PRESET.width,
       height: CANVAS_PRESET.height,
       backgroundMode,
@@ -392,9 +613,25 @@ function App() {
       titleFontFamily: selectedFont.family,
       titleColor,
       titleSize,
+      phoneOffset,
+      textOffset,
       media,
     });
-  }, [assetKind, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle, selectedFont.family, titleColor, titleSize, titleText]);
+
+    layoutRef.current = layout;
+  }, [
+    assetKind,
+    backgroundMode,
+    backgroundPrimary,
+    backgroundSecondary,
+    gradientAngle,
+    phoneOffset,
+    selectedFont.family,
+    textOffset,
+    titleColor,
+    titleSize,
+    titleText,
+  ]);
 
   useEffect(() => {
     drawCurrentFrame();
@@ -443,12 +680,11 @@ function App() {
     };
   }, []);
 
-  const handleFileChange = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = '';
-
-      if (!file) {
+  const processMediaFile = useCallback(
+    async (file: File) => {
+      if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+        setErrorMessage('이미지 또는 영상 파일만 업로드할 수 있습니다.');
+        setStatusMessage('지원 포맷을 확인해 주세요.');
         return;
       }
 
@@ -482,32 +718,27 @@ function App() {
           return;
         }
 
-        if (file.type.startsWith('video/')) {
-          const video = await new Promise<HTMLVideoElement>((resolve, reject) => {
-            const instance = document.createElement('video');
-            instance.preload = 'auto';
-            instance.playsInline = true;
-            instance.muted = true;
-            instance.loop = true;
-            instance.src = nextUrl;
+        const video = await new Promise<HTMLVideoElement>((resolve, reject) => {
+          const instance = document.createElement('video');
+          instance.preload = 'auto';
+          instance.playsInline = true;
+          instance.muted = true;
+          instance.loop = true;
+          instance.src = nextUrl;
 
-            const onLoadedData = () => resolve(instance);
-            const onError = () => reject(new Error('영상을 불러오지 못했습니다.'));
+          const onLoadedData = () => resolve(instance);
+          const onError = () => reject(new Error('영상을 불러오지 못했습니다.'));
 
-            instance.addEventListener('loadeddata', onLoadedData, { once: true });
-            instance.addEventListener('error', onError, { once: true });
-          });
+          instance.addEventListener('loadeddata', onLoadedData, { once: true });
+          instance.addEventListener('error', onError, { once: true });
+        });
 
-          await video.play().catch(() => undefined);
+        await video.play().catch(() => undefined);
 
-          imageRef.current = null;
-          videoRef.current = video;
-          setAssetKind('video');
-          setStatusMessage('영상 업로드 완료. 영상으로 출력됩니다.');
-          return;
-        }
-
-        throw new Error('이미지 또는 영상 파일만 업로드할 수 있습니다.');
+        imageRef.current = null;
+        videoRef.current = video;
+        setAssetKind('video');
+        setStatusMessage('영상 업로드 완료. 영상으로 출력됩니다.');
       } catch (error) {
         imageRef.current = null;
         videoRef.current?.pause();
@@ -522,6 +753,241 @@ function App() {
     [setAssetObjectUrl],
   );
 
+  const handleFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+
+      if (!file) {
+        return;
+      }
+
+      void processMediaFile(file);
+    },
+    [processMediaFile],
+  );
+
+  const handleUploadDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    uploadDropDepthRef.current += 1;
+    setIsUploadDropActive(true);
+  }, []);
+
+  const handleUploadDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleUploadDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    uploadDropDepthRef.current = Math.max(uploadDropDepthRef.current - 1, 0);
+
+    if (uploadDropDepthRef.current === 0) {
+      setIsUploadDropActive(false);
+    }
+  }, []);
+
+  const handleUploadDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      uploadDropDepthRef.current = 0;
+      setIsUploadDropActive(false);
+
+      const file = getFirstMediaFile(event.dataTransfer.files);
+      if (!file) {
+        setErrorMessage('이미지 또는 영상 파일만 업로드할 수 있습니다.');
+        return;
+      }
+
+      void processMediaFile(file);
+    },
+    [processMediaFile],
+  );
+
+  const handleCanvasDragEnter = useCallback((event: DragEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    canvasDropDepthRef.current += 1;
+
+    const point = toCanvasPoint(event.clientX, event.clientY);
+    setIsCanvasDropActive(isPointInsidePhoneScreen(point));
+  }, [isPointInsidePhoneScreen, toCanvasPoint]);
+
+  const handleCanvasDragOver = useCallback((event: DragEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+
+    const point = toCanvasPoint(event.clientX, event.clientY);
+    setIsCanvasDropActive(isPointInsidePhoneScreen(point));
+  }, [isPointInsidePhoneScreen, toCanvasPoint]);
+
+  const handleCanvasDragLeave = useCallback((event: DragEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    canvasDropDepthRef.current = Math.max(canvasDropDepthRef.current - 1, 0);
+
+    if (canvasDropDepthRef.current === 0) {
+      setIsCanvasDropActive(false);
+    }
+  }, []);
+
+  const handleCanvasDrop = useCallback(
+    (event: DragEvent<HTMLCanvasElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      canvasDropDepthRef.current = 0;
+      setIsCanvasDropActive(false);
+
+      const point = toCanvasPoint(event.clientX, event.clientY);
+      if (!isPointInsidePhoneScreen(point)) {
+        setStatusMessage('아이폰 화면 안에 파일을 드롭해 주세요.');
+        return;
+      }
+
+      const file = getFirstMediaFile(event.dataTransfer.files);
+      if (!file) {
+        setErrorMessage('이미지 또는 영상 파일만 업로드할 수 있습니다.');
+        return;
+      }
+
+      void processMediaFile(file);
+    },
+    [isPointInsidePhoneScreen, processMediaFile, toCanvasPoint],
+  );
+
+  const handleCanvasPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      const point = toCanvasPoint(event.clientX, event.clientY);
+      const layout = layoutRef.current;
+
+      if (!point || !layout) {
+        return;
+      }
+
+      let target: DragTarget | null = null;
+
+      if (layout.text && pointInRect(point, expandRect(layout.text.bounds, 16))) {
+        target = 'text';
+      } else if (pointInRect(point, layout.phone.body)) {
+        target = 'phone';
+      }
+
+      if (!target) {
+        return;
+      }
+
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.currentTarget.style.cursor = 'grabbing';
+
+      dragSessionRef.current = {
+        target,
+        pointerId: event.pointerId,
+        startPoint: point,
+        startPhoneOffset: phoneOffset,
+        startTextOffset: textOffset,
+        moved: false,
+      };
+    },
+    [phoneOffset, textOffset, toCanvasPoint],
+  );
+
+  const handleCanvasPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      const point = toCanvasPoint(event.clientX, event.clientY);
+      if (!point) {
+        return;
+      }
+
+      const session = dragSessionRef.current;
+      const layout = layoutRef.current;
+      if (!layout) {
+        return;
+      }
+
+      if (session && session.pointerId === event.pointerId) {
+        const dx = point.x - session.startPoint.x;
+        const dy = point.y - session.startPoint.y;
+
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+          session.moved = true;
+        }
+
+        if (session.target === 'phone') {
+          setPhoneOffset({
+            x: clamp(session.startPhoneOffset.x + dx, layout.phone.range.xMin, layout.phone.range.xMax),
+            y: clamp(session.startPhoneOffset.y + dy, layout.phone.range.yMin, layout.phone.range.yMax),
+          });
+        } else if (layout.text) {
+          setTextOffset({
+            x: clamp(session.startTextOffset.x + dx, layout.text.range.xMin, layout.text.range.xMax),
+            y: clamp(session.startTextOffset.y + dy, layout.text.range.yMin, layout.text.range.yMax),
+          });
+        }
+
+        return;
+      }
+
+      if (layout.text && pointInRect(point, expandRect(layout.text.bounds, 16))) {
+        event.currentTarget.style.cursor = 'grab';
+      } else if (pointInRect(point, layout.phone.body)) {
+        event.currentTarget.style.cursor = 'grab';
+      } else if (pointInRect(point, layout.phone.screen)) {
+        event.currentTarget.style.cursor = 'pointer';
+      } else {
+        event.currentTarget.style.cursor = 'default';
+      }
+    },
+    [toCanvasPoint],
+  );
+
+  const finishCanvasDrag = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const session = dragSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    event.currentTarget.style.cursor = 'default';
+
+    if (session.moved) {
+      suppressCanvasClickRef.current = true;
+      setStatusMessage(
+        session.target === 'phone'
+          ? '아이폰 프레임 위치를 이동했습니다.'
+          : '상단 텍스트 위치를 이동했습니다.',
+      );
+    }
+
+    dragSessionRef.current = null;
+  }, []);
+
+  const handleCanvasClick = useCallback(
+    (event: ReactMouseEvent<HTMLCanvasElement>) => {
+      if (suppressCanvasClickRef.current) {
+        suppressCanvasClickRef.current = false;
+        return;
+      }
+
+      const point = toCanvasPoint(event.clientX, event.clientY);
+      if (!isPointInsidePhoneScreen(point)) {
+        return;
+      }
+
+      fileInputRef.current?.click();
+      setStatusMessage('파일 선택 창을 열었습니다.');
+    },
+    [isPointInsidePhoneScreen, toCanvasPoint],
+  );
+
   const resetStyle = useCallback(() => {
     setTitleText(DEFAULTS.titleText);
     setTitleFontKey(DEFAULTS.titleFontKey);
@@ -531,7 +997,9 @@ function App() {
     setBackgroundPrimary(DEFAULTS.backgroundPrimary);
     setBackgroundSecondary(DEFAULTS.backgroundSecondary);
     setGradientAngle(DEFAULTS.gradientAngle);
-    setStatusMessage('디자인 옵션을 기본값으로 초기화했습니다.');
+    setPhoneOffset({ x: 0, y: 0 });
+    setTextOffset({ x: 0, y: 0 });
+    setStatusMessage('디자인 옵션과 위치를 기본값으로 초기화했습니다.');
     setErrorMessage('');
   }, []);
 
@@ -556,12 +1024,27 @@ function App() {
       titleFontFamily: selectedFont.family,
       titleColor,
       titleSize,
+      phoneOffset,
+      textOffset,
       media: imageRef.current,
     });
 
     const blob = await blobFromCanvas(offscreen);
     setArtifactBlob(blob, 'image', 'image/png', buildOutputFileName(assetName || 'preview', 'png'));
-  }, [assetName, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle, selectedFont.family, setArtifactBlob, titleColor, titleSize, titleText]);
+  }, [
+    assetName,
+    backgroundMode,
+    backgroundPrimary,
+    backgroundSecondary,
+    gradientAngle,
+    phoneOffset,
+    selectedFont.family,
+    setArtifactBlob,
+    textOffset,
+    titleColor,
+    titleSize,
+    titleText,
+  ]);
 
   const exportVideo = useCallback(async () => {
     if (!assetUrl) {
@@ -641,6 +1124,8 @@ function App() {
             titleFontFamily: selectedFont.family,
             titleColor,
             titleSize,
+            phoneOffset,
+            textOffset,
             media: source,
           });
 
@@ -669,7 +1154,21 @@ function App() {
     const outputMime = blob.type || recorder.mimeType || mimeType || 'video/webm';
     const extension = outputMime.includes('mp4') ? 'mp4' : 'webm';
     setArtifactBlob(blob, 'video', outputMime, buildOutputFileName(assetName || 'preview', extension));
-  }, [assetName, assetUrl, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle, selectedFont.family, setArtifactBlob, titleColor, titleSize, titleText]);
+  }, [
+    assetName,
+    assetUrl,
+    backgroundMode,
+    backgroundPrimary,
+    backgroundSecondary,
+    gradientAngle,
+    phoneOffset,
+    selectedFont.family,
+    setArtifactBlob,
+    textOffset,
+    titleColor,
+    titleSize,
+    titleText,
+  ]);
 
   const handleExport = useCallback(async () => {
     if (!assetKind) {
@@ -735,13 +1234,23 @@ function App() {
                   onChange={handleFileChange}
                 />
 
-                <div className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4">
+                <div
+                  className={`rounded-xl border border-dashed p-4 transition-colors ${
+                    isUploadDropActive
+                      ? 'border-emerald-500 bg-emerald-50'
+                      : 'border-zinc-300 bg-zinc-50'
+                  }`}
+                  onDragEnter={handleUploadDragEnter}
+                  onDragOver={handleUploadDragOver}
+                  onDragLeave={handleUploadDragLeave}
+                  onDrop={handleUploadDrop}
+                >
                   <div className="flex flex-wrap items-center gap-3">
                     <Button type="button" variant="secondary" onClick={() => fileInputRef.current?.click()}>
                       <Upload className="h-4 w-4" />
                       이미지/영상 업로드
                     </Button>
-                    <span className="text-sm text-zinc-600">지원: image/*, video/*</span>
+                    <span className="text-sm text-zinc-600">드래그 앤 드롭도 지원합니다.</span>
                   </div>
                   <div className="mt-3 flex items-center gap-2 text-sm text-zinc-700">
                     {assetKind === 'video' ? <Film className="h-4 w-4" /> : <ImageIcon className="h-4 w-4" />}
@@ -852,7 +1361,7 @@ function App() {
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" onClick={resetStyle}>
                   <RotateCcw className="h-4 w-4" />
-                  스타일 초기화
+                  스타일/위치 초기화
                 </Button>
                 <Button type="button" onClick={handleExport} disabled={isExporting || !assetKind}>
                   <Download className="h-4 w-4" />
@@ -871,16 +1380,34 @@ function App() {
             <Card className="border-zinc-200/80 bg-white/90">
               <CardHeader>
                 <CardTitle>라이브 미리보기</CardTitle>
-                <CardDescription>실제 출력 비율(886x1920)을 축소해서 표시합니다.</CardDescription>
+                <CardDescription>
+                  iPhone/텍스트를 드래그해 위치를 옮길 수 있고, iPhone 화면 클릭 또는 화면으로 파일 드롭 시 업로드됩니다.
+                </CardDescription>
               </CardHeader>
-              <CardContent className="flex justify-center">
-                <div className="w-full max-w-[360px] rounded-[28px] border border-zinc-200 bg-zinc-100 p-3 shadow-inner">
+              <CardContent className="flex flex-col items-center gap-3">
+                <div
+                  className={`w-full max-w-[360px] rounded-[28px] border bg-zinc-100 p-3 shadow-inner transition-all ${
+                    isCanvasDropActive ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-zinc-200'
+                  }`}
+                >
                   <canvas
                     ref={previewCanvasRef}
                     className="h-auto w-full rounded-[22px]"
                     style={{ aspectRatio: `${CANVAS_PRESET.width}/${CANVAS_PRESET.height}` }}
+                    onPointerDown={handleCanvasPointerDown}
+                    onPointerMove={handleCanvasPointerMove}
+                    onPointerUp={finishCanvasDrag}
+                    onPointerCancel={finishCanvasDrag}
+                    onClick={handleCanvasClick}
+                    onDragEnter={handleCanvasDragEnter}
+                    onDragOver={handleCanvasDragOver}
+                    onDragLeave={handleCanvasDragLeave}
+                    onDrop={handleCanvasDrop}
                   />
                 </div>
+                <p className="text-center text-xs text-zinc-500">
+                  드래그 이동: iPhone 프레임/상단 텍스트 · 업로드: 좌측 영역 DnD 또는 iPhone 화면 클릭/DnD
+                </p>
               </CardContent>
             </Card>
 
