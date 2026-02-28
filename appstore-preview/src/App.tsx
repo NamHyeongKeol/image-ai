@@ -191,6 +191,7 @@ interface DragSession {
   pointerId: number;
   startPoint: Offset;
   startPhoneOffset: Offset;
+  axisLock?: 'x' | 'y' | null;
   textBoxId?: string;
   startTextBoxPosition?: Offset;
   startTextBoxSize?: { width: number; height: number };
@@ -2784,6 +2785,7 @@ function App() {
           pointerId: event.pointerId,
           startPoint: point,
           startPhoneOffset: phoneOffset,
+          axisLock: null,
           textBoxId: hitTextBox.id,
           startTextBoxPosition: { x: hitTextBox.x, y: hitTextBox.y },
           startTextBoxSize: { width: hitTextBox.width, height: hitTextBox.height },
@@ -2805,6 +2807,7 @@ function App() {
           pointerId: event.pointerId,
           startPoint: point,
           startPhoneOffset: phoneOffset,
+          axisLock: null,
           moved: false,
         };
         return;
@@ -2829,11 +2832,28 @@ function App() {
       }
 
       if (session && session.pointerId === event.pointerId) {
-        const dx = point.x - session.startPoint.x;
-        const dy = point.y - session.startPoint.y;
+        const rawDx = point.x - session.startPoint.x;
+        const rawDy = point.y - session.startPoint.y;
+        let dx = rawDx;
+        let dy = rawDy;
+
+        if ((session.target === 'phone' || session.target === 'text-box') && event.shiftKey) {
+          if (!session.axisLock && (Math.abs(rawDx) > 0 || Math.abs(rawDy) > 0)) {
+            session.axisLock = Math.abs(rawDx) >= Math.abs(rawDy) ? 'x' : 'y';
+          }
+
+          if (session.axisLock === 'x') {
+            dy = 0;
+          } else if (session.axisLock === 'y') {
+            dx = 0;
+          }
+        } else if (session.axisLock) {
+          session.axisLock = null;
+        }
+
         const snapThreshold = getCanvasSnapThreshold();
 
-        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+        if (Math.abs(rawDx) > 1 || Math.abs(rawDy) > 1) {
           session.moved = true;
         }
 
