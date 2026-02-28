@@ -1920,6 +1920,68 @@ function App() {
     [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia],
   );
 
+  const handleDeleteProject = useCallback(
+    (targetProjectId: string) => {
+      if (projects.length <= 1) {
+        setErrorMessage('프로젝트는 최소 1개가 필요합니다.');
+        return;
+      }
+
+      const targetIndex = projects.findIndex((project) => project.id === targetProjectId);
+      if (targetIndex < 0) {
+        return;
+      }
+
+      const targetProject = projects[targetIndex];
+      if (!targetProject) {
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const projectsWithSyncedCurrent = projects.map((project) =>
+        project.id === currentProjectId && currentProjectState
+          ? {
+              ...project,
+              updatedAt: now,
+              state: currentProjectState,
+            }
+          : project,
+      );
+      const syncedTargetProject = projectsWithSyncedCurrent[targetIndex] ?? targetProject;
+      const remainingProjects = projectsWithSyncedCurrent.filter((project) => project.id !== targetProjectId);
+
+      setProjects(remainingProjects);
+
+      const nextHistoryStore = { ...historyStoreRef.current };
+      for (const canvas of syncedTargetProject.state.canvases) {
+        delete nextHistoryStore[`${syncedTargetProject.id}::${canvas.id}`];
+      }
+      historyStoreRef.current = nextHistoryStore;
+
+      if (targetProjectId === currentProjectId) {
+        const fallbackProject = remainingProjects[Math.max(0, targetIndex - 1)] ?? remainingProjects[0];
+        if (fallbackProject) {
+          setCurrentProjectId(fallbackProject.id);
+          setCurrentCanvasId(fallbackProject.state.currentCanvasId);
+          applyProjectState(fallbackProject, fallbackProject.state.currentCanvasId);
+          void restoreProjectMedia(fallbackProject, fallbackProject.state.currentCanvasId);
+        }
+      }
+
+      void (async () => {
+        for (const canvas of syncedTargetProject.state.canvases) {
+          const mediaKey = buildProjectCanvasMediaKey(syncedTargetProject.id, canvas.id);
+          await removeProjectMediaRecord(mediaKey).catch(() => undefined);
+        }
+        await removeProjectMediaRecord(syncedTargetProject.id).catch(() => undefined);
+      })();
+
+      setErrorMessage('');
+      setStatusMessage(`${syncedTargetProject.name} 프로젝트를 삭제했습니다.`);
+    },
+    [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia],
+  );
+
   const handleSelectCanvas = useCallback(
     (nextCanvasId: string) => {
       if (!currentProject || !currentProjectState || nextCanvasId === currentCanvasId) {
@@ -3883,6 +3945,16 @@ function App() {
                           aria-label={`${project.name} 복제`}
                         >
                           <Copy className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteProject(project.id)}
+                          disabled={projects.length <= 1}
+                          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          title={projects.length <= 1 ? '프로젝트는 최소 1개 필요' : '프로젝트 삭제'}
+                          aria-label={`${project.name} 삭제`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
                       <p className="mt-1 text-[11px] text-zinc-500">{project.state.canvases.length}개 캔버스</p>
