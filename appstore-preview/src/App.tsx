@@ -18,6 +18,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
+import JSZip from 'jszip';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -85,6 +86,12 @@ interface Artifact {
   mimeType: string;
   fileName: string;
   url: string;
+}
+
+interface CanvasExportArtifact {
+  blob: Blob;
+  mimeType: string;
+  extension: string;
 }
 
 interface CanvasDesignState {
@@ -1089,6 +1096,12 @@ function buildOutputFileName(sourceName: string, extension: string) {
   return `${stem}-preview-${timestamp}.${extension}`;
 }
 
+function buildBatchCanvasOutputFileName(index: number, canvasName: string, extension: string) {
+  const indexLabel = String(index + 1).padStart(2, '0');
+  const safeCanvasName = sanitizeFileNameSegment(canvasName || `canvas-${index + 1}`);
+  return `${indexLabel}-${safeCanvasName}.${extension}`;
+}
+
 async function blobFromCanvas(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -1158,6 +1171,7 @@ function App() {
 
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingProjectZip, setIsExportingProjectZip] = useState(false);
   const [isUploadDropActive, setIsUploadDropActive] = useState(false);
   const [isCanvasDropActive, setIsCanvasDropActive] = useState(false);
   const [snapGuide, setSnapGuide] = useState({ vertical: false, horizontal: false });
@@ -2701,169 +2715,190 @@ function App() {
     setErrorMessage('');
   }, []);
 
-  const exportImage = useCallback(async () => {
-    const offscreen = document.createElement('canvas');
-    offscreen.width = CANVAS_PRESET.width;
-    offscreen.height = CANVAS_PRESET.height;
-
-    const ctx = offscreen.getContext('2d');
-    if (!ctx) {
-      throw new Error('캔버스 초기화에 실패했습니다.');
+  const readCanvasMediaRecordForExport = useCallback(async (projectId: string, canvasId: string, canvasIndex: number) => {
+    const mediaKey = buildProjectCanvasMediaKey(projectId, canvasId);
+    let record = await readProjectMediaRecord(mediaKey);
+    if (!record && canvasIndex === 0) {
+      record = await readProjectMediaRecord(projectId);
     }
+    return record;
+  }, []);
 
-    drawComposition(ctx, {
-      width: CANVAS_PRESET.width,
-      height: CANVAS_PRESET.height,
-      backgroundMode,
-      backgroundPrimary,
-      backgroundSecondary,
-      gradientAngle,
-      phoneOffset,
-      phoneScale,
-      textBoxes,
-      selectedTextBoxId: null,
-      showGuides: false,
-      snapGuide: undefined,
-      emptyStateFileLabel: undefined,
-      media: imageRef.current,
-    });
+  const renderCanvasImageArtifact = useCallback(
+    async (state: CanvasDesignState, media: HTMLImageElement | HTMLVideoElement | null): Promise<CanvasExportArtifact> => {
+      const offscreen = document.createElement('canvas');
+      offscreen.width = CANVAS_PRESET.width;
+      offscreen.height = CANVAS_PRESET.height;
 
-    const blob = await blobFromCanvas(offscreen);
-    setArtifactBlob(blob, 'image', 'image/png', buildOutputFileName(assetName || 'preview', 'png'));
-  }, [
-    assetName,
-    backgroundMode,
-    backgroundPrimary,
-    backgroundSecondary,
-    gradientAngle,
-    phoneOffset,
-    phoneScale,
-    setArtifactBlob,
-    textBoxes,
-  ]);
+      const ctx = offscreen.getContext('2d');
+      if (!ctx) {
+        throw new Error('캔버스 초기화에 실패했습니다.');
+      }
+
+      drawComposition(ctx, {
+        width: CANVAS_PRESET.width,
+        height: CANVAS_PRESET.height,
+        backgroundMode: state.backgroundMode,
+        backgroundPrimary: state.backgroundPrimary,
+        backgroundSecondary: state.backgroundSecondary,
+        gradientAngle: state.gradientAngle,
+        phoneOffset: state.phoneOffset,
+        phoneScale: state.phoneScale,
+        textBoxes: state.textBoxes,
+        selectedTextBoxId: null,
+        showGuides: false,
+        snapGuide: undefined,
+        emptyStateFileLabel: undefined,
+        media,
+      });
+
+      const blob = await blobFromCanvas(offscreen);
+      return {
+        blob,
+        mimeType: 'image/png',
+        extension: 'png',
+      };
+    },
+    [],
+  );
+
+  const renderCanvasVideoArtifact = useCallback(
+    async (state: CanvasDesignState, sourceUrl: string): Promise<CanvasExportArtifact> => {
+      if (typeof MediaRecorder === 'undefined') {
+        throw new Error('현재 브라우저는 영상 내보내기를 지원하지 않습니다.');
+      }
+
+      const source = await new Promise<HTMLVideoElement>((resolve, reject) => {
+        const instance = document.createElement('video');
+        instance.preload = 'auto';
+        instance.playsInline = true;
+        instance.muted = true;
+        instance.loop = false;
+        instance.src = sourceUrl;
+
+        const onLoaded = () => resolve(instance);
+        const onError = () => reject(new Error('영상 메타데이터를 읽지 못했습니다.'));
+
+        instance.addEventListener('loadedmetadata', onLoaded, { once: true });
+        instance.addEventListener('error', onError, { once: true });
+      });
+
+      const offscreen = document.createElement('canvas');
+      offscreen.width = CANVAS_PRESET.width;
+      offscreen.height = CANVAS_PRESET.height;
+
+      const ctx = offscreen.getContext('2d');
+      if (!ctx) {
+        throw new Error('캔버스 초기화에 실패했습니다.');
+      }
+
+      const stream = offscreen.captureStream(30);
+      const mimeType = pickRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      const done = new Promise<Blob>((resolve, reject) => {
+        recorder.onerror = () => reject(new Error('영상 변환 중 오류가 발생했습니다.'));
+        recorder.onstop = () => {
+          resolve(new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' }));
+        };
+      });
+
+      recorder.start(1000 / 30);
+
+      try {
+        await source.play();
+
+        await new Promise<void>((resolve, reject) => {
+          let rafId = 0;
+
+          const onError = () => {
+            cancelAnimationFrame(rafId);
+            reject(new Error('영상 프레임을 읽는 중 오류가 발생했습니다.'));
+          };
+
+          source.addEventListener('error', onError, { once: true });
+
+          const frame = () => {
+            drawComposition(ctx, {
+              width: CANVAS_PRESET.width,
+              height: CANVAS_PRESET.height,
+              backgroundMode: state.backgroundMode,
+              backgroundPrimary: state.backgroundPrimary,
+              backgroundSecondary: state.backgroundSecondary,
+              gradientAngle: state.gradientAngle,
+              phoneOffset: state.phoneOffset,
+              phoneScale: state.phoneScale,
+              textBoxes: state.textBoxes,
+              selectedTextBoxId: null,
+              showGuides: false,
+              snapGuide: undefined,
+              emptyStateFileLabel: undefined,
+              media: source,
+            });
+
+            if (source.ended) {
+              resolve();
+              return;
+            }
+
+            rafId = requestAnimationFrame(frame);
+          };
+
+          frame();
+        });
+
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+      } finally {
+        source.pause();
+        stream.getTracks().forEach((track) => track.stop());
+
+        if (recorder.state !== 'inactive') {
+          recorder.stop();
+        }
+      }
+
+      const blob = await done;
+      const outputMime = blob.type || recorder.mimeType || mimeType || 'video/webm';
+      return {
+        blob,
+        mimeType: outputMime,
+        extension: outputMime.includes('mp4') ? 'mp4' : 'webm',
+      };
+    },
+    [],
+  );
+
+  const exportImage = useCallback(async () => {
+    const artifactResult = await renderCanvasImageArtifact(currentCanvasState, imageRef.current);
+    setArtifactBlob(
+      artifactResult.blob,
+      'image',
+      artifactResult.mimeType,
+      buildOutputFileName(assetName || 'preview', artifactResult.extension),
+    );
+  }, [assetName, currentCanvasState, renderCanvasImageArtifact, setArtifactBlob]);
 
   const exportVideo = useCallback(async () => {
     if (!assetUrl) {
       throw new Error('영상 소스가 없습니다.');
     }
 
-    if (typeof MediaRecorder === 'undefined') {
-      throw new Error('현재 브라우저는 영상 내보내기를 지원하지 않습니다.');
-    }
-
-    const source = await new Promise<HTMLVideoElement>((resolve, reject) => {
-      const instance = document.createElement('video');
-      instance.preload = 'auto';
-      instance.playsInline = true;
-      instance.muted = true;
-      instance.loop = false;
-      instance.src = assetUrl;
-
-      const onLoaded = () => resolve(instance);
-      const onError = () => reject(new Error('영상 메타데이터를 읽지 못했습니다.'));
-
-      instance.addEventListener('loadedmetadata', onLoaded, { once: true });
-      instance.addEventListener('error', onError, { once: true });
-    });
-
-    const offscreen = document.createElement('canvas');
-    offscreen.width = CANVAS_PRESET.width;
-    offscreen.height = CANVAS_PRESET.height;
-
-    const ctx = offscreen.getContext('2d');
-    if (!ctx) {
-      throw new Error('캔버스 초기화에 실패했습니다.');
-    }
-
-    const stream = offscreen.captureStream(30);
-    const mimeType = pickRecorderMimeType();
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-    const chunks: BlobPart[] = [];
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunks.push(event.data);
-      }
-    };
-
-    const done = new Promise<Blob>((resolve, reject) => {
-      recorder.onerror = () => reject(new Error('영상 변환 중 오류가 발생했습니다.'));
-      recorder.onstop = () => {
-        resolve(new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' }));
-      };
-    });
-
-    recorder.start(1000 / 30);
-
-    try {
-      await source.play();
-
-      await new Promise<void>((resolve, reject) => {
-        let rafId = 0;
-
-        const onError = () => {
-          cancelAnimationFrame(rafId);
-          reject(new Error('영상 프레임을 읽는 중 오류가 발생했습니다.'));
-        };
-
-        source.addEventListener('error', onError, { once: true });
-
-        const frame = () => {
-          drawComposition(ctx, {
-            width: CANVAS_PRESET.width,
-            height: CANVAS_PRESET.height,
-            backgroundMode,
-            backgroundPrimary,
-            backgroundSecondary,
-            gradientAngle,
-            phoneOffset,
-            phoneScale,
-            textBoxes,
-            selectedTextBoxId: null,
-            showGuides: false,
-            snapGuide: undefined,
-            emptyStateFileLabel: undefined,
-            media: source,
-          });
-
-          if (source.ended) {
-            resolve();
-            return;
-          }
-
-          rafId = requestAnimationFrame(frame);
-        };
-
-        frame();
-      });
-
-      await new Promise((resolve) => window.setTimeout(resolve, 150));
-    } finally {
-      source.pause();
-      stream.getTracks().forEach((track) => track.stop());
-
-      if (recorder.state !== 'inactive') {
-        recorder.stop();
-      }
-    }
-
-    const blob = await done;
-    const outputMime = blob.type || recorder.mimeType || mimeType || 'video/webm';
-    const extension = outputMime.includes('mp4') ? 'mp4' : 'webm';
-    setArtifactBlob(blob, 'video', outputMime, buildOutputFileName(assetName || 'preview', extension));
-    return outputMime;
-  }, [
-    assetName,
-    assetUrl,
-    backgroundMode,
-    backgroundPrimary,
-    backgroundSecondary,
-    gradientAngle,
-    phoneOffset,
-    phoneScale,
-    setArtifactBlob,
-    textBoxes,
-  ]);
+    const artifactResult = await renderCanvasVideoArtifact(currentCanvasState, assetUrl);
+    setArtifactBlob(
+      artifactResult.blob,
+      'video',
+      artifactResult.mimeType,
+      buildOutputFileName(assetName || 'preview', artifactResult.extension),
+    );
+    return artifactResult.mimeType;
+  }, [assetName, assetUrl, currentCanvasState, renderCanvasVideoArtifact, setArtifactBlob]);
 
   const handleExport = useCallback(async () => {
     if (!assetKind) {
@@ -2895,6 +2930,144 @@ function App() {
       setIsExporting(false);
     }
   }, [assetKind, assetName, exportImage, exportVideo]);
+
+  const handleExportProjectZip = useCallback(async () => {
+    if (!currentProject || !currentProjectState) {
+      setErrorMessage('내보낼 프로젝트를 찾지 못했습니다.');
+      return;
+    }
+
+    setIsExportingProjectZip(true);
+    setErrorMessage('');
+
+    try {
+      const zip = new JSZip();
+      const warnings: string[] = [];
+      let exportedCount = 0;
+
+      for (let index = 0; index < currentProjectState.canvases.length; index += 1) {
+        const canvas = currentProjectState.canvases[index];
+        const state = canvas.state;
+
+        try {
+          if (state.media.kind === 'video') {
+            let sourceUrl: string | null = null;
+            const canUseCurrentLoadedVideo =
+              canvas.id === currentCanvasId && assetKind === 'video' && typeof assetUrl === 'string' && assetUrl.length > 0;
+
+            if (canUseCurrentLoadedVideo) {
+              sourceUrl = assetUrl;
+            } else {
+              const mediaRecord = await readCanvasMediaRecordForExport(currentProject.id, canvas.id, index);
+              if (mediaRecord) {
+                sourceUrl = URL.createObjectURL(mediaRecord.blob);
+              }
+            }
+
+            if (!sourceUrl) {
+              warnings.push(`${index + 1}번 캔버스(${canvas.name}): 영상 미디어를 찾지 못해 건너뛰었습니다.`);
+              continue;
+            }
+
+            try {
+              const result = await renderCanvasVideoArtifact(state, sourceUrl);
+              zip.file(
+                buildBatchCanvasOutputFileName(index, canvas.name, result.extension),
+                result.blob,
+              );
+              exportedCount += 1;
+            } finally {
+              if (!canUseCurrentLoadedVideo) {
+                URL.revokeObjectURL(sourceUrl);
+              }
+            }
+            continue;
+          }
+
+          let media: HTMLImageElement | null = null;
+          let revokeUrl: string | null = null;
+          const canUseCurrentLoadedImage = canvas.id === currentCanvasId && assetKind === 'image' && Boolean(imageRef.current);
+
+          if (state.media.kind === 'image') {
+            if (canUseCurrentLoadedImage) {
+              media = imageRef.current;
+            } else {
+              const mediaRecord = await readCanvasMediaRecordForExport(currentProject.id, canvas.id, index);
+              if (!mediaRecord) {
+                warnings.push(`${index + 1}번 캔버스(${canvas.name}): 이미지 미디어를 찾지 못해 빈 화면으로 내보냅니다.`);
+              } else {
+                revokeUrl = URL.createObjectURL(mediaRecord.blob);
+                media = await new Promise<HTMLImageElement>((resolve, reject) => {
+                  const instance = new Image();
+                  instance.onload = () => resolve(instance);
+                  instance.onerror = () => reject(new Error('이미지 복원에 실패했습니다.'));
+                  instance.src = revokeUrl as string;
+                });
+              }
+            }
+          }
+
+          try {
+            const result = await renderCanvasImageArtifact(state, media);
+            zip.file(
+              buildBatchCanvasOutputFileName(index, canvas.name, result.extension),
+              result.blob,
+            );
+            exportedCount += 1;
+          } finally {
+            if (revokeUrl) {
+              URL.revokeObjectURL(revokeUrl);
+            }
+          }
+        } catch (canvasError) {
+          const message = canvasError instanceof Error ? canvasError.message : '알 수 없는 오류';
+          warnings.push(`${index + 1}번 캔버스(${canvas.name}): ${message}`);
+        }
+      }
+
+      if (exportedCount === 0) {
+        throw new Error('내보낼 캔버스 결과물을 생성하지 못했습니다.');
+      }
+
+      if (warnings.length > 0) {
+        zip.file('export-warnings.txt', warnings.join('\n'));
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const zipName = `${sanitizeFileNameSegment(currentProject.name)}-all-canvases-${Date.now()}.zip`;
+      const zipUrl = URL.createObjectURL(zipBlob);
+
+      const link = document.createElement('a');
+      link.href = zipUrl;
+      link.download = zipName;
+      link.click();
+      window.setTimeout(() => {
+        URL.revokeObjectURL(zipUrl);
+      }, 0);
+
+      if (warnings.length > 0) {
+        setStatusMessage(
+          `${exportedCount}개 캔버스를 ZIP으로 저장했습니다. 누락/대체 내보내기 정보는 export-warnings.txt를 확인해 주세요.`,
+        );
+      } else {
+        setStatusMessage(`${exportedCount}개 캔버스를 ZIP으로 저장했습니다.`);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '프로젝트 ZIP 내보내기에 실패했습니다.');
+      setStatusMessage('오류를 확인한 뒤 다시 시도해 주세요.');
+    } finally {
+      setIsExportingProjectZip(false);
+    }
+  }, [
+    assetKind,
+    assetUrl,
+    currentCanvasId,
+    currentProject,
+    currentProjectState,
+    readCanvasMediaRecordForExport,
+    renderCanvasImageArtifact,
+    renderCanvasVideoArtifact,
+  ]);
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#d9f4ff_0,#f2f4f7_42%,#eef2ff_100%)] px-4 py-8 text-zinc-900">
@@ -3341,9 +3514,22 @@ function App() {
                   <RotateCcw className="h-4 w-4" />
                   배경/프레임 초기화
                 </Button>
-                <Button type="button" onClick={handleExport} disabled={isExporting || !assetKind}>
+                <Button
+                  type="button"
+                  onClick={handleExport}
+                  disabled={isExporting || isExportingProjectZip || !assetKind}
+                >
                   <Download className="h-4 w-4" />
                   {isExporting ? '내보내는 중...' : '소스 타입에 맞춰 내보내기'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleExportProjectZip}
+                  disabled={isExporting || isExportingProjectZip || !currentProjectState}
+                >
+                  <Download className="h-4 w-4" />
+                  {isExportingProjectZip ? 'ZIP 생성 중...' : '프로젝트 전체 ZIP 내보내기'}
                 </Button>
               </div>
 
