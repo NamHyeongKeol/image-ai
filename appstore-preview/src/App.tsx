@@ -4186,6 +4186,116 @@ function App() {
                 <p className="text-center text-xs text-zinc-500">
                   드래그 이동: iPhone 프레임/텍스트박스 · 업로드: 좌측 영역 DnD 또는 iPhone 화면 클릭/DnD
                 </p>
+
+                <div className="w-full max-w-[360px] rounded-xl border border-zinc-200 bg-zinc-50/70 p-3">
+                  <p className="mb-2 text-xs font-semibold text-zinc-700">캔버스 텍스트 빠른 편집</p>
+                  {selectedTextBox ? (
+                    <div className="space-y-3">
+                      <Textarea
+                        value={selectedTextBox.text}
+                        onChange={(event) =>
+                          updateSelectedTextBox((box) => ({
+                            ...box,
+                            text: event.target.value,
+                          }))
+                        }
+                        placeholder="텍스트를 입력하세요"
+                        className="min-h-[72px] bg-white"
+                      />
+
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <select
+                          value={selectedTextBox.fontKey}
+                          onChange={(event) =>
+                            updateSelectedTextBox((box) => ({
+                              ...box,
+                              fontKey: event.target.value as FontKey,
+                            }))
+                          }
+                          className="h-9 w-full rounded-md border border-zinc-300 bg-white px-2 text-xs"
+                        >
+                          {FONT_OPTIONS.map((option) => (
+                            <option key={option.key} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <Input
+                          type="color"
+                          value={selectedTextBox.color}
+                          onChange={(event) =>
+                            updateSelectedTextBox((box) => ({
+                              ...box,
+                              color: event.target.value,
+                            }))
+                          }
+                          className="h-9 bg-white"
+                        />
+                      </div>
+
+                      <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                          <span>폰트 크기</span>
+                          <span>{selectedTextBox.fontSize}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={18}
+                          max={160}
+                          value={selectedTextBox.fontSize}
+                          onChange={(event) =>
+                            updateSelectedTextBox((box) => ({
+                              ...box,
+                              fontSize: Number(event.target.value),
+                            }))
+                          }
+                          className="mt-1 w-full"
+                        />
+                      </div>
+
+                      <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                          <span>텍스트박스 너비</span>
+                          <span>{Math.round(selectedTextBox.width)}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={120}
+                          max={860}
+                          value={selectedTextBox.width}
+                          onChange={(event) =>
+                            updateSelectedTextBox((box) => ({
+                              ...box,
+                              width: Number(event.target.value),
+                            }))
+                          }
+                          className="mt-1 w-full"
+                        />
+                      </div>
+
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-8 flex-1 text-xs"
+                          onClick={() => setSelectedTextBoxId(null)}
+                        >
+                          선택 해제
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-8 flex-1 text-xs"
+                          onClick={handleDeleteSelectedTextBox}
+                        >
+                          선택 박스 삭제
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-500">캔버스에서 텍스트박스를 클릭하면 여기서 바로 수정됩니다.</p>
+                  )}
+                </div>
               </CardContent>
             </Card>
 
