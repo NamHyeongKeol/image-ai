@@ -759,6 +759,43 @@ function getFirstMediaFile(files: FileList | null) {
   return null;
 }
 
+function measureTextBoxBounds(box: TextBoxModel): Rect {
+  const fontFamily = getFontFamily(box.fontKey);
+  const fontSize = clamp(box.fontSize, 18, 160);
+  const width = Math.max(120, box.width);
+  const lineHeight = fontSize * 1.2;
+
+  if (typeof document === 'undefined') {
+    return {
+      x: box.x,
+      y: box.y,
+      width,
+      height: lineHeight,
+    };
+  }
+
+  const measurementCanvas = document.createElement('canvas');
+  const ctx = measurementCanvas.getContext('2d');
+  if (!ctx) {
+    return {
+      x: box.x,
+      y: box.y,
+      width,
+      height: lineHeight,
+    };
+  }
+
+  ctx.font = `800 ${fontSize}px ${fontFamily}`;
+  const lines = wrapTextToLines(ctx, box.text, width);
+  const height = Math.max(lineHeight, lines.length * lineHeight);
+  return {
+    x: box.x,
+    y: box.y,
+    width,
+    height,
+  };
+}
+
 function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -1244,6 +1281,7 @@ function App() {
     initialProjectStore.projects[0];
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const inlineTextEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -1289,6 +1327,8 @@ function App() {
   const [selectedTextBoxId, setSelectedTextBoxId] = useState<string | null>(null);
   const [isPlacingTextBox, setIsPlacingTextBox] = useState(false);
   const [hasCopiedTextBox, setHasCopiedTextBox] = useState(false);
+  const [isInlineTextEditing, setIsInlineTextEditing] = useState(false);
+  const [canvasClientSize, setCanvasClientSize] = useState({ width: 0, height: 0 });
 
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -1310,6 +1350,35 @@ function App() {
     () => textBoxes.find((box) => box.id === selectedTextBoxId) ?? null,
     [textBoxes, selectedTextBoxId],
   );
+
+  const selectedTextBoxBounds = useMemo(
+    () => (selectedTextBox ? measureTextBoxBounds(selectedTextBox) : null),
+    [selectedTextBox],
+  );
+
+  const inlineTextEditorLayout = useMemo(() => {
+    if (!isInlineTextEditing || !selectedTextBox || !selectedTextBoxBounds) {
+      return null;
+    }
+
+    if (canvasClientSize.width <= 0 || canvasClientSize.height <= 0) {
+      return null;
+    }
+
+    const activePreset = getCanvasPresetById(canvasPresetId);
+    const scaleX = canvasClientSize.width / activePreset.width;
+    const scaleY = canvasClientSize.height / activePreset.height;
+
+    return {
+      left: selectedTextBoxBounds.x * scaleX,
+      top: selectedTextBoxBounds.y * scaleY,
+      width: selectedTextBoxBounds.width * scaleX,
+      height: Math.max(selectedTextBoxBounds.height * scaleY, selectedTextBox.fontSize * scaleY * 1.2),
+      fontSize: selectedTextBox.fontSize * scaleY,
+      fontFamily: getFontFamily(selectedTextBox.fontKey),
+      color: selectedTextBox.color,
+    };
+  }, [canvasClientSize.height, canvasClientSize.width, canvasPresetId, isInlineTextEditing, selectedTextBox, selectedTextBoxBounds]);
 
   const currentProject = useMemo(
     () => projects.find((project) => project.id === currentProjectId) ?? null,
@@ -2465,6 +2534,61 @@ function App() {
   }, [selectedTextBoxId, textBoxes]);
 
   useEffect(() => {
+    if (!selectedTextBoxId) {
+      setIsInlineTextEditing(false);
+    }
+  }, [selectedTextBoxId]);
+
+  useEffect(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const updateClientSize = () => {
+      const rect = canvas.getBoundingClientRect();
+      setCanvasClientSize((previous) => {
+        if (previous.width === rect.width && previous.height === rect.height) {
+          return previous;
+        }
+
+        return { width: rect.width, height: rect.height };
+      });
+    };
+
+    updateClientSize();
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => {
+        updateClientSize();
+      });
+      observer.observe(canvas);
+    }
+
+    window.addEventListener('resize', updateClientSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateClientSize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isInlineTextEditing || !selectedTextBoxId) {
+      return;
+    }
+
+    const editor = inlineTextEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    editor.focus();
+    const end = editor.value.length;
+    editor.setSelectionRange(end, end);
+  }, [isInlineTextEditing, selectedTextBoxId]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) {
         return;
@@ -2474,7 +2598,15 @@ function App() {
       if (isDeleteKey && !event.metaKey && !event.ctrlKey && !event.altKey && selectedTextBoxId) {
         setTextBoxes((previous) => previous.filter((box) => box.id !== selectedTextBoxId));
         setSelectedTextBoxId(null);
+        setIsInlineTextEditing(false);
         setStatusMessage('선택한 텍스트박스를 삭제했습니다.');
+        event.preventDefault();
+        return;
+      }
+
+      if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey && !event.altKey && selectedTextBoxId) {
+        setIsInlineTextEditing(true);
+        setStatusMessage('선택한 텍스트박스를 캔버스에서 바로 편집합니다.');
         event.preventDefault();
         return;
       }
@@ -2965,6 +3097,7 @@ function App() {
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      setIsInlineTextEditing(false);
       event.currentTarget.focus();
       const point = toCanvasPoint(event.clientX, event.clientY);
       const layout = layoutRef.current;
@@ -3242,6 +3375,29 @@ function App() {
     [addTextBoxAt, bringTextBoxToFront, findTopmostTextBoxAtPoint, isPlacingTextBox, toCanvasPoint],
   );
 
+  const handleCanvasDoubleClick = useCallback(
+    (event: ReactMouseEvent<HTMLCanvasElement>) => {
+      const point = toCanvasPoint(event.clientX, event.clientY);
+      const layout = layoutRef.current;
+      if (!point || !layout) {
+        return;
+      }
+
+      const hitTextBox = findTopmostTextBoxAtPoint(point, layout);
+      if (!hitTextBox) {
+        return;
+      }
+
+      bringTextBoxToFront(hitTextBox.id);
+      setSelectedTextBoxId(hitTextBox.id);
+      setIsInlineTextEditing(true);
+      setStatusMessage('텍스트박스를 캔버스에서 바로 편집 중입니다.');
+      setErrorMessage('');
+      event.preventDefault();
+    },
+    [bringTextBoxToFront, findTopmostTextBoxAtPoint, toCanvasPoint],
+  );
+
   const handleToggleTextPlacement = useCallback(() => {
     setIsPlacingTextBox((previous) => {
       const next = !previous;
@@ -3294,6 +3450,7 @@ function App() {
 
     setTextBoxes((previous) => previous.filter((box) => box.id !== selectedTextBoxId));
     setSelectedTextBoxId(null);
+    setIsInlineTextEditing(false);
     setStatusMessage('선택한 텍스트박스를 삭제했습니다.');
   }, [selectedTextBoxId]);
 
@@ -4182,27 +4339,69 @@ function App() {
                     isCanvasDropActive ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-zinc-200'
                   }`}
                 >
-                  <canvas
-                    ref={previewCanvasRef}
-                    className="h-auto w-full rounded-[22px] focus-visible:outline-none"
-                    tabIndex={0}
-                    style={{
-                      aspectRatio: `${currentCanvasPreset.width}/${currentCanvasPreset.height}`,
-                      cursor: isPlacingTextBox ? 'crosshair' : 'default',
-                    }}
-                    onPointerDown={handleCanvasPointerDown}
-                    onPointerMove={handleCanvasPointerMove}
-                    onPointerUp={finishCanvasDrag}
-                    onPointerCancel={finishCanvasDrag}
-                    onClick={handleCanvasClick}
-                    onDragEnter={handleCanvasDragEnter}
-                    onDragOver={handleCanvasDragOver}
-                    onDragLeave={handleCanvasDragLeave}
-                    onDrop={handleCanvasDrop}
-                  />
+                  <div className="relative overflow-hidden rounded-[22px]">
+                    <canvas
+                      ref={previewCanvasRef}
+                      className="block h-auto w-full rounded-[22px] focus-visible:outline-none"
+                      tabIndex={0}
+                      style={{
+                        aspectRatio: `${currentCanvasPreset.width}/${currentCanvasPreset.height}`,
+                        cursor: isPlacingTextBox ? 'crosshair' : 'default',
+                      }}
+                      onPointerDown={handleCanvasPointerDown}
+                      onPointerMove={handleCanvasPointerMove}
+                      onPointerUp={finishCanvasDrag}
+                      onPointerCancel={finishCanvasDrag}
+                      onClick={handleCanvasClick}
+                      onDoubleClick={handleCanvasDoubleClick}
+                      onDragEnter={handleCanvasDragEnter}
+                      onDragOver={handleCanvasDragOver}
+                      onDragLeave={handleCanvasDragLeave}
+                      onDrop={handleCanvasDrop}
+                    />
+
+                    {selectedTextBox && inlineTextEditorLayout && (
+                      <textarea
+                        ref={inlineTextEditorRef}
+                        value={selectedTextBox.text}
+                        onChange={(event) =>
+                          updateSelectedTextBox((box) => ({
+                            ...box,
+                            text: event.target.value,
+                          }))
+                        }
+                        onBlur={() => setIsInlineTextEditing(false)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            setIsInlineTextEditing(false);
+                            previewCanvasRef.current?.focus();
+                          }
+                        }}
+                        className={`absolute z-20 resize-none border-2 px-1 py-0.5 font-extrabold leading-[1.2] outline-none ${
+                          isInlineTextEditing
+                            ? 'border-blue-500 bg-white/70 shadow-lg'
+                            : 'pointer-events-none border-transparent bg-transparent'
+                        }`}
+                        style={{
+                          left: inlineTextEditorLayout.left,
+                          top: inlineTextEditorLayout.top,
+                          width: inlineTextEditorLayout.width,
+                          height: inlineTextEditorLayout.height,
+                          fontSize: inlineTextEditorLayout.fontSize,
+                          fontFamily: inlineTextEditorLayout.fontFamily,
+                          color: inlineTextEditorLayout.color,
+                          opacity: isInlineTextEditing ? 1 : 0,
+                        }}
+                      />
+                    )}
+                  </div>
                 </div>
                 <p className="text-center text-xs text-zinc-500">
                   드래그 이동: iPhone 프레임/텍스트박스 · 업로드: 좌측 영역 DnD 또는 iPhone 화면 클릭/DnD
+                </p>
+                <p className="text-center text-[11px] text-zinc-500">
+                  텍스트박스 더블클릭 또는 선택 후 Enter로 박스 내부에서 바로 텍스트 편집
                 </p>
 
                 <div className="w-full max-w-[360px] rounded-xl border border-zinc-200 bg-zinc-50/70 p-3">
