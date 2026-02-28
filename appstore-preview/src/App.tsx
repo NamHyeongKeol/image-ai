@@ -1426,6 +1426,15 @@ function App() {
         return;
       }
 
+      const isDeleteKey = event.key === 'Backspace' || event.key === 'Delete';
+      if (isDeleteKey && !event.metaKey && !event.ctrlKey && !event.altKey && selectedTextBoxId) {
+        setTextBoxes((previous) => previous.filter((box) => box.id !== selectedTextBoxId));
+        setSelectedTextBoxId(null);
+        setStatusMessage('선택한 텍스트박스를 삭제했습니다.');
+        event.preventDefault();
+        return;
+      }
+
       if ((!event.metaKey && !event.ctrlKey) || event.altKey) {
         return;
       }
@@ -1449,7 +1458,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [copySelectedTextBox, hasCopiedTextBox, pasteCopiedTextBox, selectedTextBox]);
+  }, [copySelectedTextBox, hasCopiedTextBox, pasteCopiedTextBox, selectedTextBox, selectedTextBoxId]);
 
   useEffect(() => {
     if (loadedProjectIdRef.current === currentProjectId) {
