@@ -241,6 +241,8 @@ const PROJECT_AUTOSAVE_DELAY_MS = 700;
 const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
 const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
+const TEXT_BOX_MIN_WIDTH = 120;
+const TEXT_BOX_MAX_WIDTH = 1000;
 const HISTORY_LIMIT_PER_CANVAS = 120;
 const HISTORY_IDLE_COMMIT_DELAY_MS = 100;
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
@@ -490,7 +492,10 @@ function sanitizeCanvasState(state: unknown): CanvasDesignState {
             text: typeof box.text === 'string' ? box.text : '',
             x: typeof box.x === 'number' ? box.x : 0,
             y: typeof box.y === 'number' ? box.y : 0,
-            width: typeof box.width === 'number' ? box.width : 320,
+            width:
+              typeof box.width === 'number'
+                ? Math.min(TEXT_BOX_MAX_WIDTH, Math.max(TEXT_BOX_MIN_WIDTH, box.width))
+                : 320,
             fontKey:
               typeof box.fontKey === 'string' && FONT_OPTIONS.some((option) => option.key === box.fontKey)
                 ? box.fontKey
@@ -774,7 +779,7 @@ function getFirstMediaFile(files: FileList | null) {
 function measureTextBoxBounds(box: TextBoxModel): Rect {
   const fontFamily = getFontFamily(box.fontKey);
   const fontSize = clamp(box.fontSize, 18, 160);
-  const width = Math.max(120, box.width);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
   const lineHeight = fontSize * 1.2;
 
   if (typeof document === 'undefined') {
@@ -964,7 +969,7 @@ function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOption
   const textBoxLayouts: TextBoxLayout[] = textBoxes.map((box) => {
     const fontFamily = getFontFamily(box.fontKey);
     const fontSize = clamp(box.fontSize, 18, 160);
-    const widthValue = Math.max(120, box.width);
+    const widthValue = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
     const lineHeight = fontSize * 1.2;
 
     ctx.save();
@@ -3303,7 +3308,7 @@ function App() {
               x: session.startTextBoxPosition.x + dx,
               y: session.startTextBoxPosition.y + dy,
             },
-            session.startTextBoxSize ?? { width: 120, height: 60 },
+            session.startTextBoxSize ?? { width: TEXT_BOX_MIN_WIDTH, height: 60 },
             { width: currentCanvasPreset.width, height: currentCanvasPreset.height },
             snapThreshold,
           );
@@ -3327,7 +3332,7 @@ function App() {
         }
 
         if (session.target === 'text-box-resize' && session.textBoxId && session.startTextBoxSize) {
-          const nextWidth = clamp(session.startTextBoxSize.width + dx, 120, currentCanvasPreset.width * 1.25);
+          const nextWidth = clamp(session.startTextBoxSize.width + dx, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
           setTextBoxes((previous) =>
             previous.map((box) =>
               box.id === session.textBoxId
@@ -3507,7 +3512,7 @@ function App() {
           ...box,
           x: box.x * scaleX,
           y: box.y * scaleY,
-          width: box.width * scaleX,
+          width: clamp(box.width * scaleX, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH),
           fontSize: clamp(box.fontSize * scaleFont, 18, 160),
         })),
       );
@@ -4334,8 +4339,8 @@ function App() {
                       </div>
                       <input
                         type="range"
-                        min={120}
-                        max={860}
+                        min={TEXT_BOX_MIN_WIDTH}
+                        max={TEXT_BOX_MAX_WIDTH}
                         value={selectedTextBox.width}
                         onChange={(event) =>
                           updateSelectedTextBox((box) => ({
@@ -4561,8 +4566,8 @@ function App() {
                         </div>
                         <input
                           type="range"
-                          min={120}
-                          max={860}
+                          min={TEXT_BOX_MIN_WIDTH}
+                          max={TEXT_BOX_MAX_WIDTH}
                           value={selectedTextBox.width}
                           onChange={(event) =>
                             updateSelectedTextBox((box) => ({
