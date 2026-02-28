@@ -2763,6 +2763,39 @@ function App() {
     });
   }, []);
 
+  const handleChangeCanvasPreset = useCallback(
+    (nextPresetId: string) => {
+      const previousPreset = getCanvasPresetById(canvasPresetId);
+      const nextPreset = getCanvasPresetById(nextPresetId);
+
+      if (previousPreset.id === nextPreset.id) {
+        return;
+      }
+
+      const scaleX = nextPreset.width / previousPreset.width;
+      const scaleY = nextPreset.height / previousPreset.height;
+      const scaleFont = Math.sqrt(scaleX * scaleY);
+
+      setCanvasPresetId(nextPreset.id);
+      setPhoneOffset((previous) => ({
+        x: previous.x * scaleX,
+        y: previous.y * scaleY,
+      }));
+      setTextBoxes((previous) =>
+        previous.map((box) => ({
+          ...box,
+          x: box.x * scaleX,
+          y: box.y * scaleY,
+          width: box.width * scaleX,
+          fontSize: clamp(box.fontSize * scaleFont, 18, 160),
+        })),
+      );
+      setStatusMessage(`캔버스 규격을 ${nextPreset.label}(으)로 변경하고 기존 배치를 자동 보정했습니다.`);
+      setErrorMessage('');
+    },
+    [canvasPresetId],
+  );
+
   const handleDeleteSelectedTextBox = useCallback(() => {
     if (!selectedTextBoxId) {
       return;
@@ -3328,7 +3361,7 @@ function App() {
                 <Label>캔버스 규격</Label>
                 <select
                   value={canvasPresetId}
-                  onChange={(event) => setCanvasPresetId(event.target.value)}
+                  onChange={(event) => handleChangeCanvasPreset(event.target.value)}
                   className="h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-700"
                 >
                   {CANVAS_PRESETS.map((preset) => (
