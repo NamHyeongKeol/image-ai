@@ -122,6 +122,10 @@ interface DrawOptions {
   textBoxes: TextBoxModel[];
   selectedTextBoxId: string | null;
   showGuides: boolean;
+  snapGuide?: {
+    vertical: boolean;
+    horizontal: boolean;
+  };
   emptyStateFileLabel?: string;
   media: HTMLImageElement | HTMLVideoElement | null;
 }
@@ -303,7 +307,7 @@ function applyCenterSnap(
   position: Offset,
   size: { width: number; height: number },
   canvas: { width: number; height: number },
-  threshold: number,
+  threshold: { x: number; y: number },
 ) {
   let nextX = position.x;
   let nextY = position.y;
@@ -313,15 +317,22 @@ function applyCenterSnap(
   const canvasCenterX = canvas.width / 2;
   const canvasCenterY = canvas.height / 2;
 
-  if (Math.abs(centerX - canvasCenterX) <= threshold) {
+  const snapX = Math.abs(centerX - canvasCenterX) <= threshold.x;
+  const snapY = Math.abs(centerY - canvasCenterY) <= threshold.y;
+
+  if (snapX) {
     nextX = canvasCenterX - size.width / 2;
   }
 
-  if (Math.abs(centerY - canvasCenterY) <= threshold) {
+  if (snapY) {
     nextY = canvasCenterY - size.height / 2;
   }
 
-  return { x: nextX, y: nextY };
+  return {
+    position: { x: nextX, y: nextY },
+    snapX,
+    snapY,
+  };
 }
 
 function pointInRect(point: Offset, rect: Rect) {
@@ -568,6 +579,7 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
     gradientAngle,
     selectedTextBoxId,
     showGuides,
+    snapGuide,
     emptyStateFileLabel,
     media,
   } = options;
@@ -708,6 +720,29 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
     ctx.strokeStyle = 'rgba(15, 23, 42, 0.4)';
     ctx.strokeRect(body.x, body.y, body.width, body.height);
     ctx.restore();
+
+    if (snapGuide?.vertical || snapGuide?.horizontal) {
+      ctx.save();
+      ctx.setLineDash([10, 10]);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(37, 99, 235, 0.9)';
+
+      if (snapGuide.vertical) {
+        ctx.beginPath();
+        ctx.moveTo(width / 2, 0);
+        ctx.lineTo(width / 2, height);
+        ctx.stroke();
+      }
+
+      if (snapGuide.horizontal) {
+        ctx.beginPath();
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
   }
 
   return layout;
@@ -787,6 +822,7 @@ function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [isUploadDropActive, setIsUploadDropActive] = useState(false);
   const [isCanvasDropActive, setIsCanvasDropActive] = useState(false);
+  const [snapGuide, setSnapGuide] = useState({ vertical: false, horizontal: false });
   const [errorMessage, setErrorMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState(
     'iPhone 프레임/텍스트박스를 드래그해 배치하고, 이미지/영상을 DnD 또는 클릭 업로드해 주세요.',
@@ -897,6 +933,31 @@ function App() {
     setAssetName('');
     setAssetObjectUrl(null);
   }, [setAssetObjectUrl]);
+
+  const getCanvasSnapThreshold = useCallback(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) {
+      return { x: CENTER_SNAP_THRESHOLD_PX, y: CENTER_SNAP_THRESHOLD_PX };
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return { x: CENTER_SNAP_THRESHOLD_PX, y: CENTER_SNAP_THRESHOLD_PX };
+    }
+
+    return {
+      x: CENTER_SNAP_THRESHOLD_PX * (canvas.width / rect.width),
+      y: CENTER_SNAP_THRESHOLD_PX * (canvas.height / rect.height),
+    };
+  }, []);
+
+  const updateSnapGuide = useCallback((next: { vertical: boolean; horizontal: boolean }) => {
+    setSnapGuide((previous) =>
+      previous.vertical === next.vertical && previous.horizontal === next.horizontal
+        ? previous
+        : next,
+    );
+  }, []);
 
   const setArtifactBlob = useCallback((blob: Blob, kind: ArtifactKind, mimeType: string, fileName: string) => {
     if (artifactUrlRef.current) {
@@ -1092,6 +1153,7 @@ function App() {
       textBoxes,
       selectedTextBoxId,
       showGuides: true,
+      snapGuide,
       emptyStateFileLabel: assetName || '선택된 파일 없음',
       media,
     });
@@ -1106,6 +1168,7 @@ function App() {
     gradientAngle,
     phoneOffset,
     phoneScale,
+    snapGuide,
     selectedTextBoxId,
     textBoxes,
   ]);
@@ -1425,6 +1488,7 @@ function App() {
 
         bringTextBoxToFront(hitTextBox.id);
         setSelectedTextBoxId(hitTextBox.id);
+        updateSnapGuide({ vertical: false, horizontal: false });
         dragSessionRef.current = {
           target: 'text-box',
           pointerId: event.pointerId,
@@ -1445,6 +1509,7 @@ function App() {
         event.currentTarget.style.cursor = 'grabbing';
 
         setSelectedTextBoxId(null);
+        updateSnapGuide({ vertical: false, horizontal: false });
         dragSessionRef.current = {
           target: 'phone',
           pointerId: event.pointerId,
@@ -1457,7 +1522,7 @@ function App() {
 
       setSelectedTextBoxId(null);
     },
-    [bringTextBoxToFront, findTopmostTextBoxAtPoint, phoneOffset, toCanvasPoint],
+    [bringTextBoxToFront, findTopmostTextBoxAtPoint, phoneOffset, toCanvasPoint, updateSnapGuide],
   );
 
   const handleCanvasPointerMove = useCallback(
@@ -1476,6 +1541,7 @@ function App() {
       if (session && session.pointerId === event.pointerId) {
         const dx = point.x - session.startPoint.x;
         const dy = point.y - session.startPoint.y;
+        const snapThreshold = getCanvasSnapThreshold();
 
         if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
           session.moved = true;
@@ -1494,12 +1560,16 @@ function App() {
             },
             { width: phoneWidth, height: phoneHeight },
             { width: CANVAS_PRESET.width, height: CANVAS_PRESET.height },
-            CENTER_SNAP_THRESHOLD_PX,
+            snapThreshold,
           );
 
+          updateSnapGuide({
+            vertical: snappedPhoneTopLeft.snapX,
+            horizontal: snappedPhoneTopLeft.snapY,
+          });
           setPhoneOffset({
-            x: snappedPhoneTopLeft.x - basePhoneX,
-            y: snappedPhoneTopLeft.y - basePhoneY,
+            x: snappedPhoneTopLeft.position.x - basePhoneX,
+            y: snappedPhoneTopLeft.position.y - basePhoneY,
           });
           return;
         }
@@ -1512,23 +1582,29 @@ function App() {
             },
             session.startTextBoxSize ?? { width: 120, height: 60 },
             { width: CANVAS_PRESET.width, height: CANVAS_PRESET.height },
-            CENTER_SNAP_THRESHOLD_PX,
+            snapThreshold,
           );
 
+          updateSnapGuide({
+            vertical: snappedTextTopLeft.snapX,
+            horizontal: snappedTextTopLeft.snapY,
+          });
           setTextBoxes((previous) =>
             previous.map((box) =>
               box.id === session.textBoxId
                 ? {
-                    ...box,
-                    x: snappedTextTopLeft.x,
-                    y: snappedTextTopLeft.y,
-                  }
+                  ...box,
+                    x: snappedTextTopLeft.position.x,
+                    y: snappedTextTopLeft.position.y,
+                }
                 : box,
             ),
           );
           return;
         }
       }
+
+      updateSnapGuide({ vertical: false, horizontal: false });
 
       if (isPlacingTextBox) {
         event.currentTarget.style.cursor = 'crosshair';
@@ -1553,7 +1629,7 @@ function App() {
 
       event.currentTarget.style.cursor = 'default';
     },
-    [findTopmostTextBoxAtPoint, isPlacingTextBox, phoneScale, toCanvasPoint],
+    [findTopmostTextBoxAtPoint, getCanvasSnapThreshold, isPlacingTextBox, phoneScale, toCanvasPoint, updateSnapGuide],
   );
 
   const finishCanvasDrag = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -1576,8 +1652,9 @@ function App() {
     }
 
     dragSessionRef.current = null;
+    updateSnapGuide({ vertical: false, horizontal: false });
     event.currentTarget.style.cursor = isPlacingTextBox ? 'crosshair' : 'default';
-  }, [isPlacingTextBox]);
+  }, [isPlacingTextBox, updateSnapGuide]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLCanvasElement>) => {
@@ -1671,6 +1748,7 @@ function App() {
       textBoxes,
       selectedTextBoxId: null,
       showGuides: false,
+      snapGuide: undefined,
       emptyStateFileLabel: undefined,
       media: imageRef.current,
     });
@@ -1768,6 +1846,7 @@ function App() {
             textBoxes,
             selectedTextBoxId: null,
             showGuides: false,
+            snapGuide: undefined,
             emptyStateFileLabel: undefined,
             media: source,
           });
