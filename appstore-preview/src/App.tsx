@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   DragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -1296,6 +1297,9 @@ function App() {
   const [snapGuide, setSnapGuide] = useState({ vertical: false, horizontal: false });
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [canvasNameDrafts, setCanvasNameDrafts] = useState<Record<string, string>>({});
+  const [draggingCanvasId, setDraggingCanvasId] = useState<string | null>(null);
+  const [canvasDropTargetId, setCanvasDropTargetId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState(
     'iPhone 프레임/텍스트박스를 드래그해 배치하고, 이미지/영상을 DnD 또는 클릭 업로드해 주세요.',
@@ -1370,6 +1374,23 @@ function App() {
     () => currentProjectCanvases.find((canvas) => canvas.id === currentCanvasId) ?? null,
     [currentCanvasId, currentProjectCanvases],
   );
+
+  useEffect(() => {
+    const existingCanvasIds = new Set(currentProjectCanvases.map((canvas) => canvas.id));
+    setCanvasNameDrafts((previous) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (const [canvasId, draft] of Object.entries(previous)) {
+        if (existingCanvasIds.has(canvasId)) {
+          next[canvasId] = draft;
+          continue;
+        }
+        changed = true;
+      }
+
+      return changed ? next : previous;
+    });
+  }, [currentProjectCanvases]);
 
   const currentMediaStorageKey = useMemo(() => {
     if (!currentProjectId || !currentCanvasId) {
@@ -1847,34 +1868,186 @@ function App() {
     [applyProjectState, currentCanvasId, currentProject, currentProjectState, restoreProjectMedia],
   );
 
-  const handleRenameCanvas = useCallback(
-    (targetCanvasId: string, nextName: string) => {
-      const trimmedName = nextName.trimStart();
+  const handleRenameCanvasDraftChange = useCallback((targetCanvasId: string, nextName: string) => {
+    setCanvasNameDrafts((previous) => ({
+      ...previous,
+      [targetCanvasId]: nextName,
+    }));
+  }, []);
+
+  const commitCanvasName = useCallback(
+    (targetCanvasId: string, rawName: string) => {
+      const resolvedName = rawName.trim() || '이름 없는 캔버스';
+      const now = new Date().toISOString();
+
       setProjects((previous) =>
         previous.map((project) => {
           if (project.id !== currentProjectId) {
             return project;
           }
 
+          let changed = false;
+          const canvases = project.state.canvases.map((canvas) => {
+            if (canvas.id !== targetCanvasId) {
+              return canvas;
+            }
+
+            if (canvas.name === resolvedName) {
+              return canvas;
+            }
+
+            changed = true;
+            return {
+              ...canvas,
+              name: resolvedName,
+            };
+          });
+
+          if (!changed) {
+            return project;
+          }
+
           return {
             ...project,
+            updatedAt: now,
             state: {
               ...project.state,
-              canvases: project.state.canvases.map((canvas) =>
-                canvas.id === targetCanvasId
-                  ? {
-                      ...canvas,
-                      name: trimmedName || '이름 없는 캔버스',
-                    }
-                  : canvas,
-              ),
+              canvases,
             },
           };
         }),
       );
+
+      setCanvasNameDrafts((previous) => {
+        if (!(targetCanvasId in previous)) {
+          return previous;
+        }
+
+        const next = { ...previous };
+        delete next[targetCanvasId];
+        return next;
+      });
     },
     [currentProjectId],
   );
+
+  const handleRenameCanvasBlur = useCallback(
+    (targetCanvasId: string, rawName: string) => {
+      commitCanvasName(targetCanvasId, rawName);
+    },
+    [commitCanvasName],
+  );
+
+  const handleRenameCanvasKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>, targetCanvasId: string) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commitCanvasName(targetCanvasId, event.currentTarget.value);
+        event.currentTarget.blur();
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setCanvasNameDrafts((previous) => {
+          if (!(targetCanvasId in previous)) {
+            return previous;
+          }
+
+          const next = { ...previous };
+          delete next[targetCanvasId];
+          return next;
+        });
+        event.currentTarget.blur();
+      }
+    },
+    [commitCanvasName],
+  );
+
+  const handleReorderCanvas = useCallback(
+    (sourceCanvasId: string, targetCanvasId: string) => {
+      if (!currentProject || !currentProjectState || sourceCanvasId === targetCanvasId) {
+        return;
+      }
+
+      const sourceIndex = currentProjectState.canvases.findIndex((canvas) => canvas.id === sourceCanvasId);
+      const targetIndex = currentProjectState.canvases.findIndex((canvas) => canvas.id === targetCanvasId);
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return;
+      }
+
+      const nextCanvases = [...currentProjectState.canvases];
+      const [sourceCanvas] = nextCanvases.splice(sourceIndex, 1);
+      if (!sourceCanvas) {
+        return;
+      }
+
+      const insertionIndex = targetIndex;
+      nextCanvases.splice(insertionIndex, 0, sourceCanvas);
+
+      const now = new Date().toISOString();
+      const nextState: ProjectDesignState = {
+        ...currentProjectState,
+        canvases: nextCanvases,
+      };
+      const nextProject: ProjectRecord = {
+        ...currentProject,
+        updatedAt: now,
+        state: nextState,
+      };
+
+      setProjects((previous) =>
+        previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+      );
+      setStatusMessage(`${sourceCanvas.name} 순서를 변경했습니다.`);
+      setErrorMessage('');
+    },
+    [currentProject, currentProjectState],
+  );
+
+  const handleCanvasCardDragStart = useCallback((event: DragEvent<HTMLDivElement>, sourceCanvasId: string) => {
+    if (isEditableTarget(event.target)) {
+      event.preventDefault();
+      return;
+    }
+
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', sourceCanvasId);
+    setDraggingCanvasId(sourceCanvasId);
+    setCanvasDropTargetId(null);
+  }, []);
+
+  const handleCanvasCardDragOver = useCallback(
+    (event: DragEvent<HTMLDivElement>, targetCanvasId: string) => {
+      if (!draggingCanvasId || draggingCanvasId === targetCanvasId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      setCanvasDropTargetId(targetCanvasId);
+    },
+    [draggingCanvasId],
+  );
+
+  const handleCanvasCardDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>, targetCanvasId: string) => {
+      event.preventDefault();
+      const sourceCanvasId = draggingCanvasId || event.dataTransfer.getData('text/plain');
+      if (sourceCanvasId) {
+        handleReorderCanvas(sourceCanvasId, targetCanvasId);
+      }
+
+      setDraggingCanvasId(null);
+      setCanvasDropTargetId(null);
+    },
+    [draggingCanvasId, handleReorderCanvas],
+  );
+
+  const handleCanvasCardDragEnd = useCallback(() => {
+    setDraggingCanvasId(null);
+    setCanvasDropTargetId(null);
+  }, []);
 
   const handleCreateCanvas = useCallback(() => {
     if (!currentProject || !currentProjectState) {
@@ -3563,6 +3736,9 @@ function App() {
           <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
             {currentProjectCanvases.map((canvas) => {
               const isActive = canvas.id === currentCanvasId;
+              const canvasNameValue = canvasNameDrafts[canvas.id] ?? canvas.name;
+              const isDragSource = draggingCanvasId === canvas.id;
+              const isDropTarget = canvasDropTargetId === canvas.id && draggingCanvasId !== canvas.id;
               const canvasPreset = getCanvasPresetById(canvas.state.canvasPresetId);
               const thumbnailHeight = getCanvasThumbnailHeight(canvasPreset.width, canvasPreset.height);
               const kindLabel =
@@ -3570,14 +3746,27 @@ function App() {
               return (
                 <div
                   key={canvas.id}
+                  draggable
+                  onDragStart={(event) => handleCanvasCardDragStart(event, canvas.id)}
+                  onDragOver={(event) => handleCanvasCardDragOver(event, canvas.id)}
+                  onDrop={(event) => handleCanvasCardDrop(event, canvas.id)}
+                  onDragEnd={handleCanvasCardDragEnd}
                   className={`w-[170px] shrink-0 rounded-lg border px-2 py-2 text-left transition ${
-                    isActive ? 'border-blue-400 bg-blue-50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-700'
+                    isDropTarget
+                      ? 'border-emerald-500 bg-emerald-50 text-emerald-900'
+                      : isActive
+                        ? 'border-blue-400 bg-blue-50 text-blue-900'
+                        : 'border-zinc-200 bg-white text-zinc-700'
                   }`}
+                  style={{ opacity: isDragSource ? 0.7 : 1 }}
                 >
                   <div className="space-y-1.5">
                     <Input
-                      value={canvas.name}
-                      onChange={(event) => handleRenameCanvas(canvas.id, event.target.value)}
+                      value={canvasNameValue}
+                      onChange={(event) => handleRenameCanvasDraftChange(canvas.id, event.target.value)}
+                      onBlur={(event) => handleRenameCanvasBlur(canvas.id, event.target.value)}
+                      onKeyDown={(event) => handleRenameCanvasKeyDown(event, canvas.id)}
+                      draggable={false}
                       className="h-7 border-zinc-300 bg-white px-2 text-[11px]"
                     />
                     <p className="truncate text-[11px] opacity-80">{canvas.state.media.name || '빈 캔버스'}</p>
