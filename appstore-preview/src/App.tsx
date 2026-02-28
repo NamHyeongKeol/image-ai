@@ -5,7 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Download, Film, Image as ImageIcon, Palette, RotateCcw, Upload } from 'lucide-react';
+import { Download, Film, Image as ImageIcon, Palette, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,7 @@ type MediaKind = 'image' | 'video' | null;
 type BackgroundMode = 'solid' | 'gradient';
 type ArtifactKind = 'image' | 'video';
 type FontKey = (typeof FONT_OPTIONS)[number]['key'];
-type DragTarget = 'phone' | 'text';
+type DragTarget = 'phone' | 'text-box';
 
 interface Offset {
   x: number;
@@ -30,11 +30,42 @@ interface Rect {
   height: number;
 }
 
-interface Range2D {
-  xMin: number;
-  xMax: number;
-  yMin: number;
-  yMax: number;
+interface TextBoxModel {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  fontKey: FontKey;
+  fontSize: number;
+  color: string;
+}
+
+interface TextBoxLayout {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  lineHeight: number;
+  lines: string[];
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bounds: Rect;
+}
+
+interface PhoneLayout {
+  body: Rect;
+  screen: Rect;
+  radius: number;
+  screenRadius: number;
+  notch: Rect;
+}
+
+interface LayoutMetrics {
+  phone: PhoneLayout;
+  textBoxes: TextBoxLayout[];
 }
 
 interface Artifact {
@@ -51,38 +82,12 @@ interface DrawOptions {
   backgroundPrimary: string;
   backgroundSecondary: string;
   gradientAngle: number;
-  titleText: string;
-  titleFontFamily: string;
-  titleColor: string;
-  titleSize: number;
   phoneOffset: Offset;
-  textOffset: Offset;
+  phoneScale: number;
+  textBoxes: TextBoxModel[];
+  selectedTextBoxId: string | null;
+  showGuides: boolean;
   media: HTMLImageElement | HTMLVideoElement | null;
-}
-
-interface TextLayout {
-  lines: string[];
-  lineHeight: number;
-  drawX: number;
-  drawStartY: number;
-  bounds: Rect;
-  range: Range2D;
-  appliedOffset: Offset;
-}
-
-interface PhoneLayout {
-  body: Rect;
-  screen: Rect;
-  radius: number;
-  screenRadius: number;
-  range: Range2D;
-  appliedOffset: Offset;
-}
-
-interface LayoutMetrics {
-  hasTitle: boolean;
-  text: TextLayout | null;
-  phone: PhoneLayout;
 }
 
 interface DragSession {
@@ -90,11 +95,15 @@ interface DragSession {
   pointerId: number;
   startPoint: Offset;
   startPhoneOffset: Offset;
-  startTextOffset: Offset;
+  textBoxId?: string;
+  startTextBoxPosition?: Offset;
   moved: boolean;
 }
 
 const CANVAS_PRESET = { label: '886 x 1920 (기본)', width: 886, height: 1920 } as const;
+
+const BASE_PHONE_WIDTH = CANVAS_PRESET.width - 220;
+const BASE_PHONE_HEIGHT = 1400;
 
 const FONT_OPTIONS = [
   { key: 'pretendard', label: 'Pretendard', family: 'Pretendard, "Noto Sans KR", sans-serif' },
@@ -104,22 +113,14 @@ const FONT_OPTIONS = [
 ] as const;
 
 const DEFAULTS = {
-  titleText: '',
-  titleFontKey: FONT_OPTIONS[0].key,
-  titleColor: '#1f3b7c',
-  titleSize: 66,
   backgroundMode: 'solid' as BackgroundMode,
   backgroundPrimary: '#f2f4f7',
   backgroundSecondary: '#dbeafe',
   gradientAngle: 26,
+  phoneScale: 1,
 };
 
 function clamp(value: number, min: number, max: number) {
-  if (min > max) {
-    const center = (min + max) / 2;
-    return center;
-  }
-
   return Math.min(max, Math.max(min, value));
 }
 
@@ -286,100 +287,74 @@ function wrapTextToLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: 
     }
   }
 
-  return lines;
+  return lines.length > 0 ? lines : [''];
+}
+
+function getFontFamily(fontKey: FontKey) {
+  return FONT_OPTIONS.find((option) => option.key === fontKey)?.family ?? FONT_OPTIONS[0].family;
 }
 
 function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOptions): LayoutMetrics {
-  const { width, height, titleText, titleFontFamily, titleSize, phoneOffset, textOffset } = options;
-  const hasTitle = titleText.trim().length > 0;
+  const { width, phoneOffset, phoneScale, textBoxes } = options;
 
-  const phoneWidth = width - 220;
-  const phoneHeight = 1400;
-  const phoneRadius = 104;
-  const basePhoneX = (width - phoneWidth) / 2;
-  const basePhoneY = hasTitle ? 440 : 260;
+  const scaledPhoneWidth = BASE_PHONE_WIDTH * phoneScale;
+  const scaledPhoneHeight = BASE_PHONE_HEIGHT * phoneScale;
+  const phoneX = (width - scaledPhoneWidth) / 2 + phoneOffset.x;
+  const phoneY = 260 + phoneOffset.y;
 
-  const phoneRange: Range2D = {
-    xMin: 22 - basePhoneX,
-    xMax: width - phoneWidth - 22 - basePhoneX,
-    yMin: 90 - basePhoneY,
-    yMax: height - phoneHeight - 22 - basePhoneY,
-  };
-
-  const appliedPhoneOffset: Offset = {
-    x: clamp(phoneOffset.x, phoneRange.xMin, phoneRange.xMax),
-    y: clamp(phoneOffset.y, phoneRange.yMin, phoneRange.yMax),
-  };
-
-  const phoneX = basePhoneX + appliedPhoneOffset.x;
-  const phoneY = basePhoneY + appliedPhoneOffset.y;
-
-  const screenInset = 22;
+  const screenInset = 22 * phoneScale;
   const screenX = phoneX + screenInset;
   const screenY = phoneY + screenInset;
-  const screenWidth = phoneWidth - screenInset * 2;
-  const screenHeight = phoneHeight - screenInset * 2;
+  const screenWidth = scaledPhoneWidth - screenInset * 2;
+  const screenHeight = scaledPhoneHeight - screenInset * 2;
 
-  let textLayout: TextLayout | null = null;
+  const textBoxLayouts: TextBoxLayout[] = textBoxes.map((box) => {
+    const fontFamily = getFontFamily(box.fontKey);
+    const fontSize = clamp(box.fontSize, 18, 160);
+    const widthValue = Math.max(120, box.width);
+    const lineHeight = fontSize * 1.2;
 
-  if (hasTitle) {
     ctx.save();
-    ctx.font = `800 ${titleSize}px ${titleFontFamily}`;
+    ctx.font = `800 ${fontSize}px ${fontFamily}`;
+    const lines = wrapTextToLines(ctx, box.text, widthValue);
+    ctx.restore();
 
-    const textLines = wrapTextToLines(ctx, titleText, width - 140);
-    const lineHeight = titleSize * 1.2;
-    const baseTextX = width / 2;
-    const baseTextY = 210;
-    const maxLineWidth = Math.max(...textLines.map((line) => ctx.measureText(line || ' ').width), 1);
+    const heightValue = Math.max(lineHeight, lines.length * lineHeight);
 
-    const blockTopBase = baseTextY - titleSize * 0.86;
-    const blockHeight = titleSize + (textLines.length - 1) * lineHeight;
-
-    const textRange: Range2D = {
-      xMin: 24 + maxLineWidth / 2 - baseTextX,
-      xMax: width - 24 - maxLineWidth / 2 - baseTextX,
-      yMin: 24 - blockTopBase,
-      yMax: height - 24 - (blockTopBase + blockHeight),
-    };
-
-    const appliedTextOffset: Offset = {
-      x: clamp(textOffset.x, textRange.xMin, textRange.xMax),
-      y: clamp(textOffset.y, textRange.yMin, textRange.yMax),
-    };
-
-    const drawX = baseTextX + appliedTextOffset.x;
-    const drawStartY = baseTextY + appliedTextOffset.y;
-    const blockTop = blockTopBase + appliedTextOffset.y;
-
-    textLayout = {
-      lines: textLines,
+    return {
+      id: box.id,
+      x: box.x,
+      y: box.y,
+      width: widthValue,
+      height: heightValue,
       lineHeight,
-      drawX,
-      drawStartY,
-      range: textRange,
-      appliedOffset: appliedTextOffset,
+      lines,
+      fontFamily,
+      fontSize,
+      color: box.color,
       bounds: {
-        x: drawX - maxLineWidth / 2 - 18,
-        y: blockTop - 12,
-        width: maxLineWidth + 36,
-        height: blockHeight + 24,
+        x: box.x,
+        y: box.y,
+        width: widthValue,
+        height: heightValue,
       },
     };
-
-    ctx.restore();
-  }
+  });
 
   return {
-    hasTitle,
-    text: textLayout,
     phone: {
-      body: { x: phoneX, y: phoneY, width: phoneWidth, height: phoneHeight },
+      body: { x: phoneX, y: phoneY, width: scaledPhoneWidth, height: scaledPhoneHeight },
       screen: { x: screenX, y: screenY, width: screenWidth, height: screenHeight },
-      radius: phoneRadius,
-      screenRadius: 76,
-      range: phoneRange,
-      appliedOffset: appliedPhoneOffset,
+      radius: 104 * phoneScale,
+      screenRadius: 76 * phoneScale,
+      notch: {
+        x: screenX + (screenWidth - 194 * phoneScale) / 2,
+        y: screenY + 14 * phoneScale,
+        width: 194 * phoneScale,
+        height: 46 * phoneScale,
+      },
     },
+    textBoxes: textBoxLayouts,
   };
 }
 
@@ -391,9 +366,8 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
     backgroundPrimary,
     backgroundSecondary,
     gradientAngle,
-    titleFontFamily,
-    titleColor,
-    titleSize,
+    selectedTextBoxId,
+    showGuides,
     media,
   } = options;
 
@@ -401,19 +375,36 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
 
   fillBackground(ctx, width, height, backgroundMode, backgroundPrimary, backgroundSecondary, gradientAngle);
 
-  if (layout.text) {
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.fillStyle = titleColor;
-    ctx.font = `800 ${titleSize}px ${titleFontFamily}`;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 
-    layout.text.lines.forEach((line, index) => {
-      ctx.fillText(line, layout.text!.drawX, layout.text!.drawStartY + index * layout.text!.lineHeight);
-    });
-    ctx.restore();
+  for (const textLayout of layout.textBoxes) {
+    const sourceBox = options.textBoxes.find((box) => box.id === textLayout.id);
+    const text = sourceBox?.text ?? '';
+
+    ctx.fillStyle = textLayout.color;
+    ctx.font = `800 ${textLayout.fontSize}px ${textLayout.fontFamily}`;
+
+    if (text.trim().length > 0) {
+      textLayout.lines.forEach((line, lineIndex) => {
+        ctx.fillText(line, textLayout.x, textLayout.y + lineIndex * textLayout.lineHeight);
+      });
+    }
+
+    if (showGuides) {
+      ctx.save();
+      ctx.setLineDash([10, 8]);
+      ctx.lineWidth = textLayout.id === selectedTextBoxId ? 3 : 2;
+      ctx.strokeStyle = textLayout.id === selectedTextBoxId ? 'rgba(37, 99, 235, 0.9)' : 'rgba(100, 116, 139, 0.5)';
+      ctx.strokeRect(textLayout.bounds.x, textLayout.bounds.y, textLayout.bounds.width, textLayout.bounds.height);
+      ctx.restore();
+    }
   }
 
-  const { body, screen, radius, screenRadius } = layout.phone;
+  ctx.restore();
+
+  const { body, screen, radius, screenRadius, notch } = layout.phone;
 
   ctx.save();
   const bodyGradient = ctx.createLinearGradient(body.x, body.y, body.x + body.width, body.y + body.height);
@@ -426,15 +417,15 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
   ctx.fill();
 
   ctx.strokeStyle = '#94a3b8';
-  ctx.lineWidth = 5;
+  ctx.lineWidth = 5 * options.phoneScale;
   ctx.stroke();
 
   ctx.fillStyle = '#64748b';
-  roundedRectPath(ctx, body.x - 5, body.y + 292, 6, 110, 4);
+  roundedRectPath(ctx, body.x - 5 * options.phoneScale, body.y + 292 * options.phoneScale, 6 * options.phoneScale, 110 * options.phoneScale, 4 * options.phoneScale);
   ctx.fill();
-  roundedRectPath(ctx, body.x - 5, body.y + 436, 6, 68, 4);
+  roundedRectPath(ctx, body.x - 5 * options.phoneScale, body.y + 436 * options.phoneScale, 6 * options.phoneScale, 68 * options.phoneScale, 4 * options.phoneScale);
   ctx.fill();
-  roundedRectPath(ctx, body.x + body.width - 1, body.y + 350, 6, 140, 4);
+  roundedRectPath(ctx, body.x + body.width - 1 * options.phoneScale, body.y + 350 * options.phoneScale, 6 * options.phoneScale, 140 * options.phoneScale, 4 * options.phoneScale);
   ctx.fill();
 
   roundedRectPath(ctx, screen.x, screen.y, screen.width, screen.height, screenRadius);
@@ -459,10 +450,19 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
   ctx.restore();
 
   ctx.save();
-  roundedRectPath(ctx, screen.x + (screen.width - 194) / 2, screen.y + 14, 194, 46, 23);
+  roundedRectPath(ctx, notch.x, notch.y, notch.width, notch.height, (23 * options.phoneScale));
   ctx.fillStyle = '#020617';
   ctx.fill();
   ctx.restore();
+
+  if (showGuides) {
+    ctx.save();
+    ctx.setLineDash([12, 10]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.4)';
+    ctx.strokeRect(body.x, body.y, body.width, body.height);
+    ctx.restore();
+  }
 
   return layout;
 }
@@ -503,15 +503,11 @@ function App() {
   const suppressCanvasClickRef = useRef(false);
   const uploadDropDepthRef = useRef(0);
   const canvasDropDepthRef = useRef(0);
+  const nextTextBoxIdRef = useRef(1);
 
   const [assetKind, setAssetKind] = useState<MediaKind>(null);
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
   const [assetName, setAssetName] = useState('');
-
-  const [titleText, setTitleText] = useState(DEFAULTS.titleText);
-  const [titleFontKey, setTitleFontKey] = useState<FontKey>(DEFAULTS.titleFontKey);
-  const [titleColor, setTitleColor] = useState(DEFAULTS.titleColor);
-  const [titleSize, setTitleSize] = useState(DEFAULTS.titleSize);
 
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(DEFAULTS.backgroundMode);
   const [backgroundPrimary, setBackgroundPrimary] = useState(DEFAULTS.backgroundPrimary);
@@ -519,7 +515,11 @@ function App() {
   const [gradientAngle, setGradientAngle] = useState(DEFAULTS.gradientAngle);
 
   const [phoneOffset, setPhoneOffset] = useState<Offset>({ x: 0, y: 0 });
-  const [textOffset, setTextOffset] = useState<Offset>({ x: 0, y: 0 });
+  const [phoneScale, setPhoneScale] = useState(DEFAULTS.phoneScale);
+
+  const [textBoxes, setTextBoxes] = useState<TextBoxModel[]>([]);
+  const [selectedTextBoxId, setSelectedTextBoxId] = useState<string | null>(null);
+  const [isPlacingTextBox, setIsPlacingTextBox] = useState(false);
 
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -527,12 +527,12 @@ function App() {
   const [isCanvasDropActive, setIsCanvasDropActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState(
-    '이미지/영상 업로드 후 iPhone 프레임과 상단 텍스트를 드래그해 위치를 조정할 수 있습니다.',
+    'iPhone 프레임/텍스트박스를 드래그해 배치하고, 이미지/영상을 DnD 또는 클릭 업로드해 주세요.',
   );
 
-  const selectedFont = useMemo(
-    () => FONT_OPTIONS.find((option) => option.key === titleFontKey) ?? FONT_OPTIONS[0],
-    [titleFontKey],
+  const selectedTextBox = useMemo(
+    () => textBoxes.find((box) => box.id === selectedTextBoxId) ?? null,
+    [textBoxes, selectedTextBoxId],
   );
 
   const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
@@ -552,12 +552,37 @@ function App() {
     };
   }, []);
 
+  const findTopmostTextBoxAtPoint = useCallback((point: Offset, layout: LayoutMetrics) => {
+    for (let i = layout.textBoxes.length - 1; i >= 0; i -= 1) {
+      const box = layout.textBoxes[i];
+      if (pointInRect(point, expandRect(box.bounds, 10))) {
+        return box;
+      }
+    }
+
+    return null;
+  }, []);
+
   const isPointInsidePhoneScreen = useCallback((point: Offset | null) => {
     if (!point || !layoutRef.current) {
       return false;
     }
 
     return pointInRect(point, layoutRef.current.phone.screen);
+  }, []);
+
+  const bringTextBoxToFront = useCallback((targetId: string) => {
+    setTextBoxes((previous) => {
+      const index = previous.findIndex((item) => item.id === targetId);
+      if (index < 0 || index === previous.length - 1) {
+        return previous;
+      }
+
+      const next = [...previous];
+      const [picked] = next.splice(index, 1);
+      next.push(picked);
+      return next;
+    });
   }, []);
 
   const setAssetObjectUrl = useCallback((nextUrl: string | null) => {
@@ -586,6 +611,35 @@ function App() {
     link.click();
   }, []);
 
+  const addTextBoxAt = useCallback((point: Offset) => {
+    const id = `text-${nextTextBoxIdRef.current}`;
+    nextTextBoxIdRef.current += 1;
+
+    const width = 460;
+    const newBox: TextBoxModel = {
+      id,
+      text: '텍스트를 입력하세요',
+      x: point.x - width / 2,
+      y: point.y - 36,
+      width,
+      fontKey: FONT_OPTIONS[0].key,
+      fontSize: 64,
+      color: '#1f3b7c',
+    };
+
+    setTextBoxes((previous) => [...previous, newBox]);
+    setSelectedTextBoxId(id);
+    setIsPlacingTextBox(false);
+    setStatusMessage('새 텍스트박스를 추가했습니다. 드래그로 위치를 조정하세요.');
+    setErrorMessage('');
+  }, []);
+
+  const updateSelectedTextBox = useCallback((updater: (box: TextBoxModel) => TextBoxModel) => {
+    setTextBoxes((previous) =>
+      previous.map((box) => (box.id === selectedTextBoxId ? updater(box) : box)),
+    );
+  }, [selectedTextBoxId]);
+
   const drawCurrentFrame = useCallback(() => {
     const canvas = previewCanvasRef.current;
     if (!canvas) {
@@ -609,12 +663,11 @@ function App() {
       backgroundPrimary,
       backgroundSecondary,
       gradientAngle,
-      titleText,
-      titleFontFamily: selectedFont.family,
-      titleColor,
-      titleSize,
       phoneOffset,
-      textOffset,
+      phoneScale,
+      textBoxes,
+      selectedTextBoxId,
+      showGuides: true,
       media,
     });
 
@@ -626,11 +679,9 @@ function App() {
     backgroundSecondary,
     gradientAngle,
     phoneOffset,
-    selectedFont.family,
-    textOffset,
-    titleColor,
-    titleSize,
-    titleText,
+    phoneScale,
+    selectedTextBoxId,
+    textBoxes,
   ]);
 
   useEffect(() => {
@@ -661,6 +712,12 @@ function App() {
       }
     };
   }, [assetKind, drawCurrentFrame]);
+
+  useEffect(() => {
+    if (selectedTextBoxId && !textBoxes.some((box) => box.id === selectedTextBoxId)) {
+      setSelectedTextBoxId(null);
+    }
+  }, [selectedTextBoxId, textBoxes]);
 
   useEffect(() => {
     return () => {
@@ -845,7 +902,7 @@ function App() {
 
       const point = toCanvasPoint(event.clientX, event.clientY);
       if (!isPointInsidePhoneScreen(point)) {
-        setStatusMessage('아이폰 화면 안에 파일을 드롭해 주세요.');
+        setStatusMessage('아이폰 화면 영역 안에 드롭해 주세요.');
         return;
       }
 
@@ -869,32 +926,47 @@ function App() {
         return;
       }
 
-      let target: DragTarget | null = null;
+      const hitTextBox = findTopmostTextBoxAtPoint(point, layout);
 
-      if (layout.text && pointInRect(point, expandRect(layout.text.bounds, 16))) {
-        target = 'text';
-      } else if (pointInRect(point, layout.phone.body)) {
-        target = 'phone';
-      }
+      if (hitTextBox) {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.style.cursor = 'grabbing';
 
-      if (!target) {
+        bringTextBoxToFront(hitTextBox.id);
+        setSelectedTextBoxId(hitTextBox.id);
+        dragSessionRef.current = {
+          target: 'text-box',
+          pointerId: event.pointerId,
+          startPoint: point,
+          startPhoneOffset: phoneOffset,
+          textBoxId: hitTextBox.id,
+          startTextBoxPosition: { x: hitTextBox.x, y: hitTextBox.y },
+          moved: false,
+        };
+
         return;
       }
 
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      event.currentTarget.style.cursor = 'grabbing';
+      if (pointInRect(point, layout.phone.body)) {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.style.cursor = 'grabbing';
 
-      dragSessionRef.current = {
-        target,
-        pointerId: event.pointerId,
-        startPoint: point,
-        startPhoneOffset: phoneOffset,
-        startTextOffset: textOffset,
-        moved: false,
-      };
+        setSelectedTextBoxId(null);
+        dragSessionRef.current = {
+          target: 'phone',
+          pointerId: event.pointerId,
+          startPoint: point,
+          startPhoneOffset: phoneOffset,
+          moved: false,
+        };
+        return;
+      }
+
+      setSelectedTextBoxId(null);
     },
-    [phoneOffset, textOffset, toCanvasPoint],
+    [bringTextBoxToFront, findTopmostTextBoxAtPoint, phoneOffset, toCanvasPoint],
   );
 
   const handleCanvasPointerMove = useCallback(
@@ -920,30 +992,52 @@ function App() {
 
         if (session.target === 'phone') {
           setPhoneOffset({
-            x: clamp(session.startPhoneOffset.x + dx, layout.phone.range.xMin, layout.phone.range.xMax),
-            y: clamp(session.startPhoneOffset.y + dy, layout.phone.range.yMin, layout.phone.range.yMax),
+            x: session.startPhoneOffset.x + dx,
+            y: session.startPhoneOffset.y + dy,
           });
-        } else if (layout.text) {
-          setTextOffset({
-            x: clamp(session.startTextOffset.x + dx, layout.text.range.xMin, layout.text.range.xMax),
-            y: clamp(session.startTextOffset.y + dy, layout.text.range.yMin, layout.text.range.yMax),
-          });
+          return;
         }
 
+        if (session.target === 'text-box' && session.textBoxId && session.startTextBoxPosition) {
+          setTextBoxes((previous) =>
+            previous.map((box) =>
+              box.id === session.textBoxId
+                ? {
+                    ...box,
+                    x: session.startTextBoxPosition!.x + dx,
+                    y: session.startTextBoxPosition!.y + dy,
+                  }
+                : box,
+            ),
+          );
+          return;
+        }
+      }
+
+      if (isPlacingTextBox) {
+        event.currentTarget.style.cursor = 'crosshair';
         return;
       }
 
-      if (layout.text && pointInRect(point, expandRect(layout.text.bounds, 16))) {
+      const hitTextBox = findTopmostTextBoxAtPoint(point, layout);
+      if (hitTextBox) {
         event.currentTarget.style.cursor = 'grab';
-      } else if (pointInRect(point, layout.phone.body)) {
-        event.currentTarget.style.cursor = 'grab';
-      } else if (pointInRect(point, layout.phone.screen)) {
-        event.currentTarget.style.cursor = 'pointer';
-      } else {
-        event.currentTarget.style.cursor = 'default';
+        return;
       }
+
+      if (pointInRect(point, layout.phone.body)) {
+        event.currentTarget.style.cursor = 'grab';
+        return;
+      }
+
+      if (pointInRect(point, layout.phone.screen)) {
+        event.currentTarget.style.cursor = 'pointer';
+        return;
+      }
+
+      event.currentTarget.style.cursor = 'default';
     },
-    [toCanvasPoint],
+    [findTopmostTextBoxAtPoint, isPlacingTextBox, toCanvasPoint],
   );
 
   const finishCanvasDrag = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -956,19 +1050,18 @@ function App() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
 
-    event.currentTarget.style.cursor = 'default';
-
     if (session.moved) {
       suppressCanvasClickRef.current = true;
       setStatusMessage(
         session.target === 'phone'
           ? '아이폰 프레임 위치를 이동했습니다.'
-          : '상단 텍스트 위치를 이동했습니다.',
+          : '텍스트박스 위치를 이동했습니다.',
       );
     }
 
     dragSessionRef.current = null;
-  }, []);
+    event.currentTarget.style.cursor = isPlacingTextBox ? 'crosshair' : 'default';
+  }, [isPlacingTextBox]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLCanvasElement>) => {
@@ -978,28 +1071,65 @@ function App() {
       }
 
       const point = toCanvasPoint(event.clientX, event.clientY);
-      if (!isPointInsidePhoneScreen(point)) {
+      const layout = layoutRef.current;
+      if (!point || !layout) {
         return;
       }
 
-      fileInputRef.current?.click();
-      setStatusMessage('파일 선택 창을 열었습니다.');
+      if (isPlacingTextBox) {
+        addTextBoxAt(point);
+        return;
+      }
+
+      const hitTextBox = findTopmostTextBoxAtPoint(point, layout);
+      if (hitTextBox) {
+        bringTextBoxToFront(hitTextBox.id);
+        setSelectedTextBoxId(hitTextBox.id);
+        return;
+      }
+
+      if (pointInRect(point, layout.phone.screen)) {
+        fileInputRef.current?.click();
+        setStatusMessage('파일 선택 창을 열었습니다.');
+        return;
+      }
+
+      setSelectedTextBoxId(null);
     },
-    [isPointInsidePhoneScreen, toCanvasPoint],
+    [addTextBoxAt, bringTextBoxToFront, findTopmostTextBoxAtPoint, isPlacingTextBox, toCanvasPoint],
   );
 
+  const handleToggleTextPlacement = useCallback(() => {
+    setIsPlacingTextBox((previous) => {
+      const next = !previous;
+      setStatusMessage(
+        next
+          ? '텍스트박스를 배치할 캔버스 위치를 클릭해 주세요.'
+          : '텍스트박스 배치를 취소했습니다.',
+      );
+      return next;
+    });
+  }, []);
+
+  const handleDeleteSelectedTextBox = useCallback(() => {
+    if (!selectedTextBoxId) {
+      return;
+    }
+
+    setTextBoxes((previous) => previous.filter((box) => box.id !== selectedTextBoxId));
+    setSelectedTextBoxId(null);
+    setStatusMessage('선택한 텍스트박스를 삭제했습니다.');
+  }, [selectedTextBoxId]);
+
   const resetStyle = useCallback(() => {
-    setTitleText(DEFAULTS.titleText);
-    setTitleFontKey(DEFAULTS.titleFontKey);
-    setTitleColor(DEFAULTS.titleColor);
-    setTitleSize(DEFAULTS.titleSize);
     setBackgroundMode(DEFAULTS.backgroundMode);
     setBackgroundPrimary(DEFAULTS.backgroundPrimary);
     setBackgroundSecondary(DEFAULTS.backgroundSecondary);
     setGradientAngle(DEFAULTS.gradientAngle);
     setPhoneOffset({ x: 0, y: 0 });
-    setTextOffset({ x: 0, y: 0 });
-    setStatusMessage('디자인 옵션과 위치를 기본값으로 초기화했습니다.');
+    setPhoneScale(DEFAULTS.phoneScale);
+    setIsPlacingTextBox(false);
+    setStatusMessage('배경/프레임 설정을 기본값으로 초기화했습니다.');
     setErrorMessage('');
   }, []);
 
@@ -1020,12 +1150,11 @@ function App() {
       backgroundPrimary,
       backgroundSecondary,
       gradientAngle,
-      titleText,
-      titleFontFamily: selectedFont.family,
-      titleColor,
-      titleSize,
       phoneOffset,
-      textOffset,
+      phoneScale,
+      textBoxes,
+      selectedTextBoxId: null,
+      showGuides: false,
       media: imageRef.current,
     });
 
@@ -1038,12 +1167,9 @@ function App() {
     backgroundSecondary,
     gradientAngle,
     phoneOffset,
-    selectedFont.family,
+    phoneScale,
     setArtifactBlob,
-    textOffset,
-    titleColor,
-    titleSize,
-    titleText,
+    textBoxes,
   ]);
 
   const exportVideo = useCallback(async () => {
@@ -1120,12 +1246,11 @@ function App() {
             backgroundPrimary,
             backgroundSecondary,
             gradientAngle,
-            titleText,
-            titleFontFamily: selectedFont.family,
-            titleColor,
-            titleSize,
             phoneOffset,
-            textOffset,
+            phoneScale,
+            textBoxes,
+            selectedTextBoxId: null,
+            showGuides: false,
             media: source,
           });
 
@@ -1162,12 +1287,9 @@ function App() {
     backgroundSecondary,
     gradientAngle,
     phoneOffset,
-    selectedFont.family,
+    phoneScale,
     setArtifactBlob,
-    textOffset,
-    titleColor,
-    titleSize,
-    titleText,
+    textBoxes,
   ]);
 
   const handleExport = useCallback(async () => {
@@ -1201,7 +1323,7 @@ function App() {
         <header className="rounded-2xl border border-white/70 bg-white/80 px-6 py-5 shadow-sm backdrop-blur">
           <h1 className="text-2xl font-semibold tracking-tight">App Store Preview Composer</h1>
           <p className="mt-2 text-sm text-zinc-600">
-            iPhone 규격(886x1920) 기준으로 이미지/영상을 업로드하고 배경·텍스트를 조정해 결과물을 생성합니다.
+            iPhone 규격(886x1920) 기준으로 업로드/드래그 배치 후 결과물을 생성합니다.
           </p>
         </header>
 
@@ -1250,7 +1372,7 @@ function App() {
                       <Upload className="h-4 w-4" />
                       이미지/영상 업로드
                     </Button>
-                    <span className="text-sm text-zinc-600">드래그 앤 드롭도 지원합니다.</span>
+                    <span className="text-sm text-zinc-600">드래그 앤 드롭 지원</span>
                   </div>
                   <div className="mt-3 flex items-center gap-2 text-sm text-zinc-700">
                     {assetKind === 'video' ? <Film className="h-4 w-4" /> : <ImageIcon className="h-4 w-4" />}
@@ -1313,46 +1435,150 @@ function App() {
               </div>
 
               <div className="space-y-3">
-                <Label>3. 상단 텍스트</Label>
-                <Textarea
-                  value={titleText}
-                  onChange={(event) => setTitleText(event.target.value)}
-                  placeholder="비워두면 상단 텍스트가 표시되지 않습니다."
-                />
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label className="text-xs text-zinc-500">서체</Label>
-                    <select
-                      value={titleFontKey}
-                      onChange={(event) => setTitleFontKey(event.target.value as FontKey)}
-                      className="h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm"
-                    >
-                      {FONT_OPTIONS.map((option) => (
-                        <option key={option.key} value={option.key}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label className="text-xs text-zinc-500">텍스트 색상</Label>
-                    <Input type="color" value={titleColor} onChange={(event) => setTitleColor(event.target.value)} className="h-10" />
-                  </div>
+                <Label>3. 텍스트박스</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant={isPlacingTextBox ? 'default' : 'secondary'} onClick={handleToggleTextPlacement}>
+                    <Plus className="h-4 w-4" />
+                    {isPlacingTextBox ? '배치 취소' : '텍스트박스 추가(클릭 배치)'}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={handleDeleteSelectedTextBox} disabled={!selectedTextBox}>
+                    <Trash2 className="h-4 w-4" />
+                    선택 박스 삭제
+                  </Button>
                 </div>
 
+                <div className="max-h-36 space-y-2 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-2">
+                  {textBoxes.length === 0 ? (
+                    <p className="text-xs text-zinc-500">텍스트박스가 없습니다.</p>
+                  ) : (
+                    textBoxes.map((box) => (
+                      <button
+                        key={box.id}
+                        type="button"
+                        className={`w-full rounded-md border px-2 py-1 text-left text-xs ${
+                          box.id === selectedTextBoxId
+                            ? 'border-blue-400 bg-blue-50 text-blue-800'
+                            : 'border-zinc-200 bg-white text-zinc-700'
+                        }`}
+                        onClick={() => {
+                          bringTextBoxToFront(box.id);
+                          setSelectedTextBoxId(box.id);
+                        }}
+                      >
+                        {box.text.trim() || '(빈 텍스트)'}
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                {selectedTextBox ? (
+                  <div className="space-y-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                    <Textarea
+                      value={selectedTextBox.text}
+                      onChange={(event) =>
+                        updateSelectedTextBox((box) => ({
+                          ...box,
+                          text: event.target.value,
+                        }))
+                      }
+                      placeholder="텍스트를 입력하세요"
+                    />
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-zinc-500">서체</Label>
+                        <select
+                          value={selectedTextBox.fontKey}
+                          onChange={(event) =>
+                            updateSelectedTextBox((box) => ({
+                              ...box,
+                              fontKey: event.target.value as FontKey,
+                            }))
+                          }
+                          className="h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm"
+                        >
+                          {FONT_OPTIONS.map((option) => (
+                            <option key={option.key} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs text-zinc-500">텍스트 색상</Label>
+                        <Input
+                          type="color"
+                          value={selectedTextBox.color}
+                          onChange={(event) =>
+                            updateSelectedTextBox((box) => ({
+                              ...box,
+                              color: event.target.value,
+                            }))
+                          }
+                          className="h-10"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
+                      <div className="flex items-center justify-between text-xs text-zinc-500">
+                        <span>폰트 크기</span>
+                        <span>{selectedTextBox.fontSize}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={18}
+                        max={160}
+                        value={selectedTextBox.fontSize}
+                        onChange={(event) =>
+                          updateSelectedTextBox((box) => ({
+                            ...box,
+                            fontSize: Number(event.target.value),
+                          }))
+                        }
+                        className="mt-1 w-full"
+                      />
+                    </div>
+
+                    <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
+                      <div className="flex items-center justify-between text-xs text-zinc-500">
+                        <span>텍스트박스 너비</span>
+                        <span>{Math.round(selectedTextBox.width)}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={120}
+                        max={860}
+                        value={selectedTextBox.width}
+                        onChange={(event) =>
+                          updateSelectedTextBox((box) => ({
+                            ...box,
+                            width: Number(event.target.value),
+                          }))
+                        }
+                        className="mt-1 w-full"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-500">편집할 텍스트박스를 선택해 주세요.</p>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <Label>4. iPhone 프레임</Label>
                 <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
                   <div className="flex items-center justify-between text-xs text-zinc-500">
                     <span>크기</span>
-                    <span>{titleSize}px</span>
+                    <span>{Math.round(phoneScale * 100)}%</span>
                   </div>
                   <input
                     type="range"
-                    min={42}
-                    max={92}
-                    value={titleSize}
-                    onChange={(event) => setTitleSize(Number(event.target.value))}
+                    min={50}
+                    max={180}
+                    value={Math.round(phoneScale * 100)}
+                    onChange={(event) => setPhoneScale(Number(event.target.value) / 100)}
                     className="mt-1 w-full"
                   />
                 </div>
@@ -1361,7 +1587,7 @@ function App() {
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" onClick={resetStyle}>
                   <RotateCcw className="h-4 w-4" />
-                  스타일/위치 초기화
+                  배경/프레임 초기화
                 </Button>
                 <Button type="button" onClick={handleExport} disabled={isExporting || !assetKind}>
                   <Download className="h-4 w-4" />
@@ -1381,7 +1607,7 @@ function App() {
               <CardHeader>
                 <CardTitle>라이브 미리보기</CardTitle>
                 <CardDescription>
-                  iPhone/텍스트를 드래그해 위치를 옮길 수 있고, iPhone 화면 클릭 또는 화면으로 파일 드롭 시 업로드됩니다.
+                  프레임/텍스트박스는 캔버스 밖으로도 이동 가능하며, 바깥 부분은 잘려 보이지 않습니다.
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col items-center gap-3">
@@ -1393,7 +1619,10 @@ function App() {
                   <canvas
                     ref={previewCanvasRef}
                     className="h-auto w-full rounded-[22px]"
-                    style={{ aspectRatio: `${CANVAS_PRESET.width}/${CANVAS_PRESET.height}` }}
+                    style={{
+                      aspectRatio: `${CANVAS_PRESET.width}/${CANVAS_PRESET.height}`,
+                      cursor: isPlacingTextBox ? 'crosshair' : 'default',
+                    }}
                     onPointerDown={handleCanvasPointerDown}
                     onPointerMove={handleCanvasPointerMove}
                     onPointerUp={finishCanvasDrag}
@@ -1406,7 +1635,7 @@ function App() {
                   />
                 </div>
                 <p className="text-center text-xs text-zinc-500">
-                  드래그 이동: iPhone 프레임/상단 텍스트 · 업로드: 좌측 영역 DnD 또는 iPhone 화면 클릭/DnD
+                  드래그 이동: iPhone 프레임/텍스트박스 · 업로드: 좌측 영역 DnD 또는 iPhone 화면 클릭/DnD
                 </p>
               </CardContent>
             </Card>
