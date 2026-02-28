@@ -334,6 +334,22 @@ function createNextCanvasName(canvases: ProjectCanvasRecord[]) {
   return `캔버스 ${index}`;
 }
 
+function createDuplicateName(existingNames: string[], sourceName: string) {
+  const existing = new Set(existingNames);
+  const baseName = sourceName.trim() || '이름 없음';
+  const firstCandidate = `${baseName} 복사본`;
+  if (!existing.has(firstCandidate)) {
+    return firstCandidate;
+  }
+
+  let index = 2;
+  while (existing.has(`${baseName} 복사본 ${index}`)) {
+    index += 1;
+  }
+
+  return `${baseName} 복사본 ${index}`;
+}
+
 function sanitizeFileNameSegment(name: string) {
   return name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 60) || 'project';
 }
@@ -1512,6 +1528,120 @@ function App() {
     setCurrentCanvasId(newProject.state.currentCanvasId);
   }, [currentProjectId, currentProjectState, projects]);
 
+  const handleRenameProject = useCallback((targetProjectId: string, nextName: string) => {
+    const trimmedName = nextName.trimStart();
+    setProjects((previous) =>
+      previous.map((project) =>
+        project.id === targetProjectId
+          ? {
+              ...project,
+              name: trimmedName || '이름 없는 프로젝트',
+            }
+          : project,
+      ),
+    );
+  }, []);
+
+  const handleDuplicateProject = useCallback(
+    (sourceProjectId: string) => {
+      const sourceProject = projects.find((project) => project.id === sourceProjectId);
+      if (!sourceProject) {
+        return;
+      }
+
+      const resolvedSourceState =
+        sourceProjectId === currentProjectId && currentProjectState ? currentProjectState : sourceProject.state;
+      const projectIdMap = new Map<string, string>();
+      const duplicatedCanvases = resolvedSourceState.canvases.map((canvas) => {
+        const duplicatedCanvasId = createCanvasId();
+        projectIdMap.set(canvas.id, duplicatedCanvasId);
+        return {
+          id: duplicatedCanvasId,
+          name: canvas.name,
+          state: cloneCanvasState(canvas.state),
+          thumbnailDataUrl: canvas.thumbnailDataUrl,
+        } satisfies ProjectCanvasRecord;
+      });
+      const duplicatedProjectId = createProjectId();
+      const duplicatedCurrentCanvasId =
+        projectIdMap.get(resolvedSourceState.currentCanvasId) ?? duplicatedCanvases[0]?.id ?? createCanvasId();
+      const duplicatedProjectName = createDuplicateName(
+        projects.map((project) => project.name),
+        sourceProject.name,
+      );
+
+      const duplicatedProject: ProjectRecord = {
+        id: duplicatedProjectId,
+        name: duplicatedProjectName,
+        updatedAt: new Date().toISOString(),
+        state: {
+          canvases: duplicatedCanvases,
+          currentCanvasId: duplicatedCurrentCanvasId,
+        },
+      };
+
+      void (async () => {
+        let mediaCopyFailed = false;
+        for (const sourceCanvas of resolvedSourceState.canvases) {
+          if (!sourceCanvas.state.media.kind) {
+            continue;
+          }
+
+          const duplicatedCanvasId = projectIdMap.get(sourceCanvas.id);
+          if (!duplicatedCanvasId) {
+            continue;
+          }
+
+          try {
+            const sourceMediaKey = buildProjectCanvasMediaKey(sourceProject.id, sourceCanvas.id);
+            const targetMediaKey = buildProjectCanvasMediaKey(duplicatedProject.id, duplicatedCanvasId);
+            let sourceRecord = await readProjectMediaRecord(sourceMediaKey);
+            const firstCanvasId = resolvedSourceState.canvases[0]?.id ?? '';
+            if (!sourceRecord && sourceCanvas.id === firstCanvasId) {
+              sourceRecord = await readProjectMediaRecord(sourceProject.id);
+            }
+
+            if (sourceRecord) {
+              await saveProjectMediaRecord({
+                ...sourceRecord,
+                projectId: targetMediaKey,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          } catch {
+            mediaCopyFailed = true;
+          }
+        }
+
+        const now = new Date().toISOString();
+        setProjects((previous) => [
+          ...previous.map((project) =>
+            project.id === currentProjectId && currentProjectState
+              ? {
+                  ...project,
+                  updatedAt: now,
+                  state: currentProjectState,
+                }
+              : project,
+          ),
+          duplicatedProject,
+        ]);
+        setCurrentProjectId(duplicatedProject.id);
+        setCurrentCanvasId(duplicatedProject.state.currentCanvasId);
+        applyProjectState(duplicatedProject, duplicatedProject.state.currentCanvasId);
+        await restoreProjectMedia(duplicatedProject, duplicatedProject.state.currentCanvasId);
+
+        if (mediaCopyFailed) {
+          setErrorMessage('프로젝트 복제는 완료했지만 일부 미디어 복사에 실패했습니다. 필요 시 다시 업로드해 주세요.');
+        } else {
+          setErrorMessage('');
+        }
+        setStatusMessage(`${sourceProject.name} 프로젝트를 ${duplicatedProject.name}로 복제했습니다.`);
+      })();
+    },
+    [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia],
+  );
+
   const handleSelectCanvas = useCallback(
     (nextCanvasId: string) => {
       if (!currentProject || !currentProjectState || nextCanvasId === currentCanvasId) {
@@ -1540,6 +1670,35 @@ function App() {
       void restoreProjectMedia(nextProject, nextCanvasId);
     },
     [applyProjectState, currentCanvasId, currentProject, currentProjectState, restoreProjectMedia],
+  );
+
+  const handleRenameCanvas = useCallback(
+    (targetCanvasId: string, nextName: string) => {
+      const trimmedName = nextName.trimStart();
+      setProjects((previous) =>
+        previous.map((project) => {
+          if (project.id !== currentProjectId) {
+            return project;
+          }
+
+          return {
+            ...project,
+            state: {
+              ...project.state,
+              canvases: project.state.canvases.map((canvas) =>
+                canvas.id === targetCanvasId
+                  ? {
+                      ...canvas,
+                      name: trimmedName || '이름 없는 캔버스',
+                    }
+                  : canvas,
+              ),
+            },
+          };
+        }),
+      );
+    },
+    [currentProjectId],
   );
 
   const handleCreateCanvas = useCallback(() => {
@@ -2751,18 +2910,50 @@ function App() {
 
             <div className="w-full max-w-md space-y-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
               <Label className="text-xs text-zinc-500">프로젝트</Label>
+              <div className="max-h-44 space-y-2 overflow-y-auto rounded-md border border-zinc-200 bg-white p-2">
+                {projects.map((project) => {
+                  const isActive = project.id === currentProjectId;
+                  return (
+                    <div
+                      key={project.id}
+                      className={`rounded-md border p-2 ${
+                        isActive ? 'border-blue-300 bg-blue-50/60' : 'border-zinc-200 bg-zinc-50/70'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectProject(project.id)}
+                          className={`h-8 rounded-md border px-2 text-[11px] ${
+                            isActive
+                              ? 'border-blue-300 bg-white text-blue-700'
+                              : 'border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50'
+                          }`}
+                        >
+                          {isActive ? '선택됨' : '열기'}
+                        </button>
+                        <Input
+                          value={project.name}
+                          onChange={(event) => handleRenameProject(project.id, event.target.value)}
+                          className="h-8 border-zinc-300 bg-white text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleDuplicateProject(project.id)}
+                          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-600 hover:bg-zinc-50"
+                          title="프로젝트 복제"
+                          aria-label={`${project.name} 복제`}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <p className="mt-1 text-[11px] text-zinc-500">{project.state.canvases.length}개 캔버스</p>
+                    </div>
+                  );
+                })}
+              </div>
+
               <div className="flex flex-wrap gap-2">
-                <select
-                  value={currentProjectId}
-                  onChange={(event) => handleSelectProject(event.target.value)}
-                  className="h-10 min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 text-sm"
-                >
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
                 <Button type="button" variant="secondary" onClick={handleCreateProject}>
                   <Plus className="h-4 w-4" />
                   새 프로젝트
@@ -2804,13 +2995,26 @@ function App() {
                   }`}
                 >
                   <div className="flex items-start gap-2">
-                    <button type="button" onClick={() => handleSelectCanvas(canvas.id)} className="min-w-0 flex-1 text-left">
-                      <p className="truncate text-sm font-semibold">{canvas.name}</p>
+                    <div className="min-w-0 flex-1">
+                      <Input
+                        value={canvas.name}
+                        onChange={(event) => handleRenameCanvas(canvas.id, event.target.value)}
+                        className="h-8 border-zinc-300 bg-white text-xs"
+                      />
                       <p className="mt-1 truncate text-xs opacity-80">{canvas.state.media.name || '빈 캔버스'}</p>
                       <p className="mt-1 text-[11px] opacity-70">{kindLabel}</p>
-                    </button>
+                    </div>
 
                     <div className="flex shrink-0 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectCanvas(canvas.id)}
+                        className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-50"
+                        title={isActive ? '현재 캔버스' : '캔버스 열기'}
+                        aria-label={`${canvas.name} 열기`}
+                      >
+                        {isActive ? '선택' : '열기'}
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleDuplicateCanvas(canvas.id)}
