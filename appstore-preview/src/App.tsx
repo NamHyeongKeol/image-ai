@@ -242,6 +242,7 @@ const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
 const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
 const HISTORY_LIMIT_PER_CANVAS = 120;
+const HISTORY_IDLE_COMMIT_DELAY_MS = 100;
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
 const PROJECT_MEDIA_DB_VERSION = 1;
 const PROJECT_MEDIA_STORE_NAME = 'project_media';
@@ -2666,14 +2667,31 @@ function App() {
       return;
     }
 
-    existing.past.push(cloneHistorySnapshot(existing.present));
-    if (existing.past.length > HISTORY_LIMIT_PER_CANVAS) {
-      existing.past.shift();
-    }
-    existing.present = snapshot;
-    existing.future = [];
-    setCanUndo(existing.past.length > 0);
-    setCanRedo(false);
+    const timer = window.setTimeout(() => {
+      const latestEntry = historyStoreRef.current[currentHistoryKey];
+      if (!latestEntry || !latestEntry.present) {
+        return;
+      }
+
+      if (areHistorySnapshotsEqual(latestEntry.present, snapshot)) {
+        setCanUndo(latestEntry.past.length > 0);
+        setCanRedo(latestEntry.future.length > 0);
+        return;
+      }
+
+      latestEntry.past.push(cloneHistorySnapshot(latestEntry.present));
+      if (latestEntry.past.length > HISTORY_LIMIT_PER_CANVAS) {
+        latestEntry.past.shift();
+      }
+      latestEntry.present = snapshot;
+      latestEntry.future = [];
+      setCanUndo(latestEntry.past.length > 0);
+      setCanRedo(false);
+    }, HISTORY_IDLE_COMMIT_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [buildHistorySnapshot, currentHistoryKey]);
 
   useEffect(() => {
