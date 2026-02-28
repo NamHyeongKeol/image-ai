@@ -243,6 +243,10 @@ const CANVAS_THUMBNAIL_WIDTH = 154;
 const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
 const TEXT_BOX_MIN_WIDTH = 120;
 const TEXT_BOX_MAX_WIDTH = 1000;
+const TEXT_BOX_FONT_SIZE_MIN = 18;
+const TEXT_BOX_FONT_SIZE_MAX = 160;
+const PHONE_SCALE_PERCENT_MIN = 50;
+const PHONE_SCALE_PERCENT_MAX = 180;
 const HISTORY_LIMIT_PER_CANVAS = 120;
 const HISTORY_IDLE_COMMIT_DELAY_MS = 100;
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
@@ -500,7 +504,10 @@ function sanitizeCanvasState(state: unknown): CanvasDesignState {
               typeof box.fontKey === 'string' && FONT_OPTIONS.some((option) => option.key === box.fontKey)
                 ? box.fontKey
                 : FONT_OPTIONS[0].key,
-            fontSize: typeof box.fontSize === 'number' ? box.fontSize : 48,
+            fontSize:
+              typeof box.fontSize === 'number'
+                ? clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX)
+                : 48,
             color: typeof box.color === 'string' ? box.color : '#1f3b7c',
           }))
       : [],
@@ -778,7 +785,7 @@ function getFirstMediaFile(files: FileList | null) {
 
 function measureTextBoxBounds(box: TextBoxModel): Rect {
   const fontFamily = getFontFamily(box.fontKey);
-  const fontSize = clamp(box.fontSize, 18, 160);
+  const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
   const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
   const lineHeight = fontSize * 1.2;
 
@@ -968,7 +975,7 @@ function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOption
 
   const textBoxLayouts: TextBoxLayout[] = textBoxes.map((box) => {
     const fontFamily = getFontFamily(box.fontKey);
-    const fontSize = clamp(box.fontSize, 18, 160);
+    const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
     const widthValue = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
     const lineHeight = fontSize * 1.2;
 
@@ -2429,6 +2436,45 @@ function App() {
     );
   }, [selectedTextBoxId]);
 
+  const handleSelectedTextBoxFontSizeChange = useCallback(
+    (value: number) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+
+      const nextFontSize = clamp(value, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
+      updateSelectedTextBox((box) => ({
+        ...box,
+        fontSize: nextFontSize,
+      }));
+    },
+    [updateSelectedTextBox],
+  );
+
+  const handleSelectedTextBoxWidthChange = useCallback(
+    (value: number) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+
+      const nextWidth = clamp(value, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+      updateSelectedTextBox((box) => ({
+        ...box,
+        width: nextWidth,
+      }));
+    },
+    [updateSelectedTextBox],
+  );
+
+  const handlePhoneScalePercentChange = useCallback((value: number) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    const nextPercent = clamp(value, PHONE_SCALE_PERCENT_MIN, PHONE_SCALE_PERCENT_MAX);
+    setPhoneScale(nextPercent / 100);
+  }, []);
+
   const copySelectedTextBox = useCallback(() => {
     if (!selectedTextBox) {
       return false;
@@ -3513,7 +3559,7 @@ function App() {
           x: box.x * scaleX,
           y: box.y * scaleY,
           width: clamp(box.width * scaleX, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH),
-          fontSize: clamp(box.fontSize * scaleFont, 18, 160),
+          fontSize: clamp(box.fontSize * scaleFont, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
         })),
       );
       setStatusMessage(`캔버스 규격을 ${nextPreset.label}(으)로 변경하고 기존 배치를 자동 보정했습니다.`);
@@ -4317,19 +4363,31 @@ function App() {
                         <span>폰트 크기</span>
                         <span>{selectedTextBox.fontSize}px</span>
                       </div>
-                      <input
-                        type="range"
-                        min={18}
-                        max={160}
-                        value={selectedTextBox.fontSize}
-                        onChange={(event) =>
-                          updateSelectedTextBox((box) => ({
-                            ...box,
-                            fontSize: Number(event.target.value),
-                          }))
-                        }
-                        className="mt-1 w-full"
-                      />
+                      <div className="mt-1 flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={TEXT_BOX_FONT_SIZE_MIN}
+                          max={TEXT_BOX_FONT_SIZE_MAX}
+                          value={selectedTextBox.fontSize}
+                          onChange={(event) => handleSelectedTextBoxFontSizeChange(Number(event.target.value))}
+                          className="w-full"
+                        />
+                        <Input
+                          type="number"
+                          min={TEXT_BOX_FONT_SIZE_MIN}
+                          max={TEXT_BOX_FONT_SIZE_MAX}
+                          step={1}
+                          value={selectedTextBox.fontSize}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            if (raw === '') {
+                              return;
+                            }
+                            handleSelectedTextBoxFontSizeChange(Number(raw));
+                          }}
+                          className="h-8 w-24 bg-white text-xs"
+                        />
+                      </div>
                     </div>
 
                     <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
@@ -4337,19 +4395,31 @@ function App() {
                         <span>텍스트박스 너비</span>
                         <span>{Math.round(selectedTextBox.width)}px</span>
                       </div>
-                      <input
-                        type="range"
-                        min={TEXT_BOX_MIN_WIDTH}
-                        max={TEXT_BOX_MAX_WIDTH}
-                        value={selectedTextBox.width}
-                        onChange={(event) =>
-                          updateSelectedTextBox((box) => ({
-                            ...box,
-                            width: Number(event.target.value),
-                          }))
-                        }
-                        className="mt-1 w-full"
-                      />
+                      <div className="mt-1 flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={TEXT_BOX_MIN_WIDTH}
+                          max={TEXT_BOX_MAX_WIDTH}
+                          value={selectedTextBox.width}
+                          onChange={(event) => handleSelectedTextBoxWidthChange(Number(event.target.value))}
+                          className="w-full"
+                        />
+                        <Input
+                          type="number"
+                          min={TEXT_BOX_MIN_WIDTH}
+                          max={TEXT_BOX_MAX_WIDTH}
+                          step={1}
+                          value={Math.round(selectedTextBox.width)}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            if (raw === '') {
+                              return;
+                            }
+                            handleSelectedTextBoxWidthChange(Number(raw));
+                          }}
+                          className="h-8 w-24 bg-white text-xs"
+                        />
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -4364,14 +4434,31 @@ function App() {
                     <span>크기</span>
                     <span>{Math.round(phoneScale * 100)}%</span>
                   </div>
-                  <input
-                    type="range"
-                    min={50}
-                    max={180}
-                    value={Math.round(phoneScale * 100)}
-                    onChange={(event) => setPhoneScale(Number(event.target.value) / 100)}
-                    className="mt-1 w-full"
-                  />
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={PHONE_SCALE_PERCENT_MIN}
+                      max={PHONE_SCALE_PERCENT_MAX}
+                      value={Math.round(phoneScale * 100)}
+                      onChange={(event) => handlePhoneScalePercentChange(Number(event.target.value))}
+                      className="w-full"
+                    />
+                    <Input
+                      type="number"
+                      min={PHONE_SCALE_PERCENT_MIN}
+                      max={PHONE_SCALE_PERCENT_MAX}
+                      step={1}
+                      value={Math.round(phoneScale * 100)}
+                      onChange={(event) => {
+                        const raw = event.target.value;
+                        if (raw === '') {
+                          return;
+                        }
+                        handlePhoneScalePercentChange(Number(raw));
+                      }}
+                      className="h-8 w-24 bg-white text-xs"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -4544,19 +4631,31 @@ function App() {
                           <span>폰트 크기</span>
                           <span>{selectedTextBox.fontSize}px</span>
                         </div>
-                        <input
-                          type="range"
-                          min={18}
-                          max={160}
-                          value={selectedTextBox.fontSize}
-                          onChange={(event) =>
-                            updateSelectedTextBox((box) => ({
-                              ...box,
-                              fontSize: Number(event.target.value),
-                            }))
-                          }
-                          className="mt-1 w-full"
-                        />
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={TEXT_BOX_FONT_SIZE_MIN}
+                            max={TEXT_BOX_FONT_SIZE_MAX}
+                            value={selectedTextBox.fontSize}
+                            onChange={(event) => handleSelectedTextBoxFontSizeChange(Number(event.target.value))}
+                            className="w-full"
+                          />
+                          <Input
+                            type="number"
+                            min={TEXT_BOX_FONT_SIZE_MIN}
+                            max={TEXT_BOX_FONT_SIZE_MAX}
+                            step={1}
+                            value={selectedTextBox.fontSize}
+                            onChange={(event) => {
+                              const raw = event.target.value;
+                              if (raw === '') {
+                                return;
+                              }
+                              handleSelectedTextBoxFontSizeChange(Number(raw));
+                            }}
+                            className="h-8 w-24 bg-white text-xs"
+                          />
+                        </div>
                       </div>
 
                       <div className="rounded-md border border-zinc-300 bg-white px-3 py-2">
@@ -4564,19 +4663,31 @@ function App() {
                           <span>텍스트박스 너비</span>
                           <span>{Math.round(selectedTextBox.width)}px</span>
                         </div>
-                        <input
-                          type="range"
-                          min={TEXT_BOX_MIN_WIDTH}
-                          max={TEXT_BOX_MAX_WIDTH}
-                          value={selectedTextBox.width}
-                          onChange={(event) =>
-                            updateSelectedTextBox((box) => ({
-                              ...box,
-                              width: Number(event.target.value),
-                            }))
-                          }
-                          className="mt-1 w-full"
-                        />
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={TEXT_BOX_MIN_WIDTH}
+                            max={TEXT_BOX_MAX_WIDTH}
+                            value={selectedTextBox.width}
+                            onChange={(event) => handleSelectedTextBoxWidthChange(Number(event.target.value))}
+                            className="w-full"
+                          />
+                          <Input
+                            type="number"
+                            min={TEXT_BOX_MIN_WIDTH}
+                            max={TEXT_BOX_MAX_WIDTH}
+                            step={1}
+                            value={Math.round(selectedTextBox.width)}
+                            onChange={(event) => {
+                              const raw = event.target.value;
+                              if (raw === '') {
+                                return;
+                              }
+                              handleSelectedTextBoxWidthChange(Number(raw));
+                            }}
+                            className="h-8 w-24 bg-white text-xs"
+                          />
+                        </div>
                       </div>
 
                       <div className="flex gap-2">
