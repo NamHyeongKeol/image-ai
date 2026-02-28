@@ -87,6 +87,7 @@ interface DrawOptions {
   textBoxes: TextBoxModel[];
   selectedTextBoxId: string | null;
   showGuides: boolean;
+  emptyStateFileLabel?: string;
   media: HTMLImageElement | HTMLVideoElement | null;
 }
 
@@ -368,6 +369,7 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
     gradientAngle,
     selectedTextBoxId,
     showGuides,
+    emptyStateFileLabel,
     media,
   } = options;
 
@@ -445,6 +447,51 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
   } else {
     ctx.fillStyle = '#e5e7eb';
     ctx.fillRect(screen.x, screen.y, screen.width, screen.height);
+
+    const hintPadding = 48 * options.phoneScale;
+    const hintWidth = screen.width - hintPadding * 2;
+    const hintHeight = 280 * options.phoneScale;
+    const hintX = screen.x + hintPadding;
+    const hintY = screen.y + screen.height / 2 - hintHeight / 2;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    roundedRectPath(ctx, hintX, hintY, hintWidth, hintHeight, 28 * options.phoneScale);
+    ctx.fill();
+
+    ctx.setLineDash([14 * options.phoneScale, 10 * options.phoneScale]);
+    ctx.lineWidth = 3 * options.phoneScale;
+    ctx.strokeStyle = 'rgba(71, 85, 105, 0.55)';
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const iconCenterX = hintX + hintWidth / 2;
+    const iconTopY = hintY + 58 * options.phoneScale;
+    const iconSize = 30 * options.phoneScale;
+
+    ctx.beginPath();
+    ctx.moveTo(iconCenterX, iconTopY);
+    ctx.lineTo(iconCenterX, iconTopY + iconSize);
+    ctx.moveTo(iconCenterX - 12 * options.phoneScale, iconTopY + 12 * options.phoneScale);
+    ctx.lineTo(iconCenterX, iconTopY);
+    ctx.lineTo(iconCenterX + 12 * options.phoneScale, iconTopY + 12 * options.phoneScale);
+    ctx.strokeStyle = 'rgba(37, 99, 235, 0.85)';
+    ctx.lineWidth = 4 * options.phoneScale;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.font = `800 ${34 * options.phoneScale}px "Noto Sans KR", sans-serif`;
+    ctx.fillText('이미지/영상을 업로드해주세요', iconCenterX, hintY + 108 * options.phoneScale);
+
+    ctx.font = `600 ${24 * options.phoneScale}px "Noto Sans KR", sans-serif`;
+    ctx.fillStyle = 'rgba(51, 65, 85, 0.88)';
+    ctx.fillText(emptyStateFileLabel ?? '선택된 파일 없음', iconCenterX, hintY + 162 * options.phoneScale);
+
+    ctx.font = `600 ${22 * options.phoneScale}px "Noto Sans KR", sans-serif`;
+    ctx.fillStyle = 'rgba(30, 64, 175, 0.85)';
+    ctx.fillText('드래그 앤 드롭 가능', iconCenterX, hintY + 206 * options.phoneScale);
   }
 
   ctx.restore();
@@ -668,11 +715,13 @@ function App() {
       textBoxes,
       selectedTextBoxId,
       showGuides: true,
+      emptyStateFileLabel: assetName || '선택된 파일 없음',
       media,
     });
 
     layoutRef.current = layout;
   }, [
+    assetName,
     assetKind,
     backgroundMode,
     backgroundPrimary,
@@ -1155,6 +1204,7 @@ function App() {
       textBoxes,
       selectedTextBoxId: null,
       showGuides: false,
+      emptyStateFileLabel: undefined,
       media: imageRef.current,
     });
 
@@ -1251,6 +1301,7 @@ function App() {
             textBoxes,
             selectedTextBoxId: null,
             showGuides: false,
+            emptyStateFileLabel: undefined,
             media: source,
           });
 
