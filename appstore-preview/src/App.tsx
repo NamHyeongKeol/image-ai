@@ -98,6 +98,7 @@ interface DragSession {
   startPhoneOffset: Offset;
   textBoxId?: string;
   startTextBoxPosition?: Offset;
+  startTextBoxSize?: { width: number; height: number };
   moved: boolean;
 }
 
@@ -105,6 +106,7 @@ const CANVAS_PRESET = { label: '886 x 1920 (기본)', width: 886, height: 1920 }
 
 const BASE_PHONE_WIDTH = CANVAS_PRESET.width - 220;
 const BASE_PHONE_HEIGHT = 1400;
+const CENTER_SNAP_THRESHOLD_PX = 5;
 
 const FONT_OPTIONS = [
   { key: 'pretendard', label: 'Pretendard', family: 'Pretendard, "Noto Sans KR", sans-serif' },
@@ -123,6 +125,31 @@ const DEFAULTS = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function applyCenterSnap(
+  position: Offset,
+  size: { width: number; height: number },
+  canvas: { width: number; height: number },
+  threshold: number,
+) {
+  let nextX = position.x;
+  let nextY = position.y;
+
+  const centerX = position.x + size.width / 2;
+  const centerY = position.y + size.height / 2;
+  const canvasCenterX = canvas.width / 2;
+  const canvasCenterY = canvas.height / 2;
+
+  if (Math.abs(centerX - canvasCenterX) <= threshold) {
+    nextX = canvasCenterX - size.width / 2;
+  }
+
+  if (Math.abs(centerY - canvasCenterY) <= threshold) {
+    nextY = canvasCenterY - size.height / 2;
+  }
+
+  return { x: nextX, y: nextY };
 }
 
 function pointInRect(point: Offset, rect: Rect) {
@@ -991,6 +1018,7 @@ function App() {
           startPhoneOffset: phoneOffset,
           textBoxId: hitTextBox.id,
           startTextBoxPosition: { x: hitTextBox.x, y: hitTextBox.y },
+          startTextBoxSize: { width: hitTextBox.width, height: hitTextBox.height },
           moved: false,
         };
 
@@ -1040,21 +1068,46 @@ function App() {
         }
 
         if (session.target === 'phone') {
+          const phoneWidth = BASE_PHONE_WIDTH * phoneScale;
+          const phoneHeight = BASE_PHONE_HEIGHT * phoneScale;
+          const basePhoneX = (CANVAS_PRESET.width - phoneWidth) / 2;
+          const basePhoneY = 260;
+
+          const snappedPhoneTopLeft = applyCenterSnap(
+            {
+              x: basePhoneX + session.startPhoneOffset.x + dx,
+              y: basePhoneY + session.startPhoneOffset.y + dy,
+            },
+            { width: phoneWidth, height: phoneHeight },
+            { width: CANVAS_PRESET.width, height: CANVAS_PRESET.height },
+            CENTER_SNAP_THRESHOLD_PX,
+          );
+
           setPhoneOffset({
-            x: session.startPhoneOffset.x + dx,
-            y: session.startPhoneOffset.y + dy,
+            x: snappedPhoneTopLeft.x - basePhoneX,
+            y: snappedPhoneTopLeft.y - basePhoneY,
           });
           return;
         }
 
         if (session.target === 'text-box' && session.textBoxId && session.startTextBoxPosition) {
+          const snappedTextTopLeft = applyCenterSnap(
+            {
+              x: session.startTextBoxPosition.x + dx,
+              y: session.startTextBoxPosition.y + dy,
+            },
+            session.startTextBoxSize ?? { width: 120, height: 60 },
+            { width: CANVAS_PRESET.width, height: CANVAS_PRESET.height },
+            CENTER_SNAP_THRESHOLD_PX,
+          );
+
           setTextBoxes((previous) =>
             previous.map((box) =>
               box.id === session.textBoxId
                 ? {
                     ...box,
-                    x: session.startTextBoxPosition!.x + dx,
-                    y: session.startTextBoxPosition!.y + dy,
+                    x: snappedTextTopLeft.x,
+                    y: snappedTextTopLeft.y,
                   }
                 : box,
             ),
@@ -1086,7 +1139,7 @@ function App() {
 
       event.currentTarget.style.cursor = 'default';
     },
-    [findTopmostTextBoxAtPoint, isPlacingTextBox, toCanvasPoint],
+    [findTopmostTextBoxAtPoint, isPlacingTextBox, phoneScale, toCanvasPoint],
   );
 
   const finishCanvasDrag = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
