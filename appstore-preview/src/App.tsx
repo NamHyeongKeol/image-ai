@@ -105,6 +105,7 @@ interface ProjectCanvasRecord {
   id: string;
   name: string;
   state: CanvasDesignState;
+  thumbnailDataUrl?: string;
 }
 
 interface ProjectDesignState {
@@ -188,6 +189,9 @@ const DEFAULTS = {
 const LOCAL_PROJECTS_STORAGE_KEY = 'appstore-preview.projects.v1';
 const LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
 const PROJECT_AUTOSAVE_DELAY_MS = 700;
+const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
+const CANVAS_THUMBNAIL_WIDTH = 154;
+const CANVAS_THUMBNAIL_HEIGHT = Math.round((CANVAS_THUMBNAIL_WIDTH * CANVAS_PRESET.height) / CANVAS_PRESET.width);
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
 const PROJECT_MEDIA_DB_VERSION = 1;
 const PROJECT_MEDIA_STORE_NAME = 'project_media';
@@ -259,6 +263,7 @@ function createCanvasRecord(name: string, state: CanvasDesignState = createEmpty
     id: createCanvasId(),
     name,
     state: cloneCanvasState(state),
+    thumbnailDataUrl: undefined,
   };
 }
 
@@ -270,6 +275,7 @@ function createProjectDesignState(initialCanvas?: ProjectCanvasRecord): ProjectD
         id: firstCanvas.id,
         name: firstCanvas.name,
         state: cloneCanvasState(firstCanvas.state),
+        thumbnailDataUrl: firstCanvas.thumbnailDataUrl,
       },
     ],
     currentCanvasId: firstCanvas.id,
@@ -287,6 +293,7 @@ function createProjectRecord(name: string, state: ProjectDesignState = createPro
         id: canvas.id,
         name: canvas.name,
         state: cloneCanvasState(canvas.state),
+        thumbnailDataUrl: canvas.thumbnailDataUrl,
       })),
     },
   };
@@ -396,6 +403,10 @@ function sanitizeProjectState(state: unknown): ProjectDesignState {
         id: typeof canvas.id === 'string' && canvas.id ? canvas.id : createCanvasId(),
         name: typeof canvas.name === 'string' && canvas.name.trim() ? canvas.name.trim() : `캔버스 ${index + 1}`,
         state: sanitizeCanvasState(canvas.state ?? canvas),
+        thumbnailDataUrl:
+          typeof (canvas as { thumbnailDataUrl?: unknown }).thumbnailDataUrl === 'string'
+            ? (canvas as { thumbnailDataUrl: string }).thumbnailDataUrl
+            : undefined,
       }));
 
     const safeCanvases = canvases.length > 0 ? canvases : [createCanvasRecord('캔버스 1')];
@@ -409,6 +420,7 @@ function sanitizeProjectState(state: unknown): ProjectDesignState {
         id: canvas.id,
         name: canvas.name,
         state: cloneCanvasState(canvas.state),
+        thumbnailDataUrl: canvas.thumbnailDataUrl,
       })),
       currentCanvasId,
     };
@@ -998,6 +1010,49 @@ function drawComposition(ctx: CanvasRenderingContext2D, options: DrawOptions): L
   }
 
   return layout;
+}
+
+function createCanvasThumbnailDataUrl(
+  state: CanvasDesignState,
+  media: HTMLImageElement | HTMLVideoElement | null,
+) {
+  const fullCanvas = document.createElement('canvas');
+  fullCanvas.width = CANVAS_PRESET.width;
+  fullCanvas.height = CANVAS_PRESET.height;
+
+  const fullCtx = fullCanvas.getContext('2d');
+  if (!fullCtx) {
+    return '';
+  }
+
+  drawComposition(fullCtx, {
+    width: CANVAS_PRESET.width,
+    height: CANVAS_PRESET.height,
+    backgroundMode: state.backgroundMode,
+    backgroundPrimary: state.backgroundPrimary,
+    backgroundSecondary: state.backgroundSecondary,
+    gradientAngle: state.gradientAngle,
+    phoneOffset: state.phoneOffset,
+    phoneScale: state.phoneScale,
+    textBoxes: state.textBoxes,
+    selectedTextBoxId: null,
+    showGuides: false,
+    snapGuide: undefined,
+    emptyStateFileLabel: state.media.name || '선택된 파일 없음',
+    media,
+  });
+
+  const thumbCanvas = document.createElement('canvas');
+  thumbCanvas.width = CANVAS_THUMBNAIL_WIDTH;
+  thumbCanvas.height = CANVAS_THUMBNAIL_HEIGHT;
+
+  const thumbCtx = thumbCanvas.getContext('2d');
+  if (!thumbCtx) {
+    return '';
+  }
+
+  thumbCtx.drawImage(fullCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+  return thumbCanvas.toDataURL('image/jpeg', 0.82);
 }
 
 function pickRecorderMimeType() {
@@ -1796,6 +1851,59 @@ function App() {
   }, [currentProjectId, currentProjectState]);
 
   useEffect(() => {
+    if (!currentCanvasId) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const media =
+        assetKind === 'video' ? videoRef.current : assetKind === 'image' ? imageRef.current : null;
+      const thumbnailDataUrl = createCanvasThumbnailDataUrl(currentCanvasState, media);
+      if (!thumbnailDataUrl) {
+        return;
+      }
+
+      setProjects((previous) => {
+        let changed = false;
+        const next = previous.map((project) => {
+          if (project.id !== currentProjectId) {
+            return project;
+          }
+
+          const canvases = project.state.canvases.map((canvas) => {
+            if (canvas.id !== currentCanvasId || canvas.thumbnailDataUrl === thumbnailDataUrl) {
+              return canvas;
+            }
+            changed = true;
+            return {
+              ...canvas,
+              thumbnailDataUrl,
+            };
+          });
+
+          if (!changed) {
+            return project;
+          }
+
+          return {
+            ...project,
+            state: {
+              ...project.state,
+              canvases,
+            },
+          };
+        });
+
+        return changed ? next : previous;
+      });
+    }, CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [assetKind, assetUrl, currentCanvasId, currentCanvasState, currentProjectId]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
@@ -2586,6 +2694,25 @@ function App() {
                   <p className="truncate text-sm font-semibold">{canvas.name}</p>
                   <p className="mt-1 truncate text-xs opacity-80">{canvas.state.media.name || '빈 캔버스'}</p>
                   <p className="mt-1 text-[11px] opacity-70">{kindLabel}</p>
+                  <div className="mt-2 rounded-md border border-zinc-200/80 bg-zinc-100/70 p-1">
+                    <div
+                      className="mx-auto overflow-hidden rounded-[8px] border border-zinc-300 bg-zinc-200"
+                      style={{ width: CANVAS_THUMBNAIL_WIDTH / 2, height: CANVAS_THUMBNAIL_HEIGHT / 2 }}
+                    >
+                      {canvas.thumbnailDataUrl ? (
+                        <img
+                          src={canvas.thumbnailDataUrl}
+                          alt={`${canvas.name} 미리보기`}
+                          className="h-full w-full object-cover"
+                          draggable={false}
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-zinc-100 text-[10px] text-zinc-500">
+                          미리보기 없음
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </button>
               );
             })}
