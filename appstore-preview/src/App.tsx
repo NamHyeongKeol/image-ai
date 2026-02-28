@@ -97,26 +97,23 @@ interface CanvasExportArtifact {
   extension: string;
 }
 
-interface CanvasHistoryState {
-  canvasPresetId: string;
-  backgroundMode: BackgroundMode;
-  backgroundPrimary: string;
-  backgroundSecondary: string;
-  gradientAngle: number;
-  phoneOffset: Offset;
-  phoneScale: number;
-  textBoxes: TextBoxModel[];
+interface AppHistoryProjectSnapshot {
+  id: string;
+  name: string;
+  state: ProjectDesignState;
 }
 
-interface CanvasHistorySnapshot {
-  state: CanvasHistoryState;
+interface AppHistorySnapshot {
+  projects: AppHistoryProjectSnapshot[];
+  currentProjectId: string;
+  currentCanvasId: string;
   selectedTextBoxId: string | null;
 }
 
-interface CanvasHistoryEntry {
-  past: CanvasHistorySnapshot[];
-  present: CanvasHistorySnapshot | null;
-  future: CanvasHistorySnapshot[];
+interface AppHistoryEntry {
+  past: AppHistorySnapshot[];
+  present: AppHistorySnapshot | null;
+  future: AppHistorySnapshot[];
 }
 
 interface CanvasDesignState {
@@ -298,27 +295,49 @@ function getPhoneBaseMetrics(canvasWidth: number, canvasHeight: number, phoneSca
   };
 }
 
-function cloneHistoryState(state: CanvasHistoryState): CanvasHistoryState {
+function cloneProjectCanvasRecord(canvas: ProjectCanvasRecord): ProjectCanvasRecord {
   return {
-    ...state,
-    phoneOffset: { ...state.phoneOffset },
-    textBoxes: state.textBoxes.map((box) => ({ ...box })),
+    id: canvas.id,
+    name: canvas.name,
+    state: cloneCanvasState(canvas.state),
+    thumbnailDataUrl: canvas.thumbnailDataUrl,
   };
 }
 
-function cloneHistorySnapshot(snapshot: CanvasHistorySnapshot): CanvasHistorySnapshot {
+function cloneProjectDesignState(state: ProjectDesignState): ProjectDesignState {
   return {
-    state: cloneHistoryState(snapshot.state),
+    currentCanvasId: state.currentCanvasId,
+    canvases: state.canvases.map((canvas) => cloneProjectCanvasRecord(canvas)),
+  };
+}
+
+function cloneAppHistorySnapshot(snapshot: AppHistorySnapshot): AppHistorySnapshot {
+  return {
+    projects: snapshot.projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      state: cloneProjectDesignState(project.state),
+    })),
+    currentProjectId: snapshot.currentProjectId,
+    currentCanvasId: snapshot.currentCanvasId,
     selectedTextBoxId: snapshot.selectedTextBoxId,
   };
 }
 
-function areHistorySnapshotsEqual(left: CanvasHistorySnapshot, right: CanvasHistorySnapshot) {
+function areAppHistorySnapshotsEqual(left: AppHistorySnapshot, right: AppHistorySnapshot) {
+  if (left.currentProjectId !== right.currentProjectId) {
+    return false;
+  }
+
+  if (left.currentCanvasId !== right.currentCanvasId) {
+    return false;
+  }
+
   if (left.selectedTextBoxId !== right.selectedTextBoxId) {
     return false;
   }
 
-  return JSON.stringify(left.state) === JSON.stringify(right.state);
+  return JSON.stringify(left.projects) === JSON.stringify(right.projects);
 }
 
 function createEmptyCanvasState(): CanvasDesignState {
@@ -1325,7 +1344,7 @@ function App() {
   const mediaRestoreTokenRef = useRef(0);
   const loadedProjectIdRef = useRef<string | null>(null);
   const copiedTextBoxRef = useRef<TextBoxModel | null>(null);
-  const historyStoreRef = useRef<Record<string, CanvasHistoryEntry>>({});
+  const historyEntryRef = useRef<AppHistoryEntry>({ past: [], present: null, future: [] });
   const isApplyingHistoryRef = useRef(false);
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
@@ -1494,40 +1513,36 @@ function App() {
     return buildProjectCanvasMediaKey(currentProjectId, currentCanvasId);
   }, [currentCanvasId, currentProjectId]);
 
-  const currentHistoryKey = useMemo(() => {
-    if (!currentProjectId || !currentCanvasId) {
-      return '';
+  const buildAppHistorySnapshot = useCallback<() => AppHistorySnapshot>(() => {
+    const syncedProjects: AppHistoryProjectSnapshot[] = projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      state: cloneProjectDesignState(
+        project.id === currentProjectId && currentProjectState ? currentProjectState : project.state,
+      ),
+    }));
+
+    const fallbackProject = syncedProjects[0];
+    const activeProject =
+      syncedProjects.find((project) => project.id === currentProjectId) ?? fallbackProject;
+    const resolvedProjectId = activeProject?.id ?? '';
+    const resolvedCanvasId =
+      activeProject?.state.canvases.find((canvas) => canvas.id === currentCanvasId)?.id ??
+      activeProject?.state.currentCanvasId ??
+      activeProject?.state.canvases[0]?.id ??
+      '';
+
+    if (activeProject && activeProject.state.currentCanvasId !== resolvedCanvasId) {
+      activeProject.state.currentCanvasId = resolvedCanvasId;
     }
 
-    return `${currentProjectId}::${currentCanvasId}`;
-  }, [currentCanvasId, currentProjectId]);
-
-  const buildHistorySnapshot = useCallback<() => CanvasHistorySnapshot>(
-    () => ({
-      state: {
-        canvasPresetId,
-        backgroundMode,
-        backgroundPrimary,
-        backgroundSecondary,
-        gradientAngle,
-        phoneOffset: { ...phoneOffset },
-        phoneScale,
-        textBoxes: textBoxes.map((box) => ({ ...box })),
-      },
+    return {
+      projects: syncedProjects,
+      currentProjectId: resolvedProjectId,
+      currentCanvasId: resolvedCanvasId,
       selectedTextBoxId,
-    }),
-    [
-      backgroundMode,
-      backgroundPrimary,
-      backgroundSecondary,
-      canvasPresetId,
-      gradientAngle,
-      phoneOffset,
-      phoneScale,
-      selectedTextBoxId,
-      textBoxes,
-    ],
-  );
+    };
+  }, [currentCanvasId, currentProjectId, currentProjectState, projects, selectedTextBoxId]);
 
   const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
     const canvas = previewCanvasRef.current;
@@ -1964,12 +1979,6 @@ function App() {
 
       setProjects(remainingProjects);
 
-      const nextHistoryStore = { ...historyStoreRef.current };
-      for (const canvas of syncedTargetProject.state.canvases) {
-        delete nextHistoryStore[`${syncedTargetProject.id}::${canvas.id}`];
-      }
-      historyStoreRef.current = nextHistoryStore;
-
       if (targetProjectId === currentProjectId) {
         const fallbackProject = remainingProjects[Math.max(0, targetIndex - 1)] ?? remainingProjects[0];
         if (fallbackProject) {
@@ -1979,14 +1988,6 @@ function App() {
           void restoreProjectMedia(fallbackProject, fallbackProject.state.currentCanvasId);
         }
       }
-
-      void (async () => {
-        for (const canvas of syncedTargetProject.state.canvases) {
-          const mediaKey = buildProjectCanvasMediaKey(syncedTargetProject.id, canvas.id);
-          await removeProjectMediaRecord(mediaKey).catch(() => undefined);
-        }
-        await removeProjectMediaRecord(syncedTargetProject.id).catch(() => undefined);
-      })();
 
       setErrorMessage('');
       setStatusMessage(`${syncedTargetProject.name} 프로젝트를 삭제했습니다.`);
@@ -2336,9 +2337,6 @@ function App() {
         void restoreProjectMedia(nextProject, nextCurrentCanvasId);
       }
 
-      const removedMediaKey = buildProjectCanvasMediaKey(currentProject.id, targetCanvasId);
-      void removeProjectMediaRecord(removedMediaKey).catch(() => undefined);
-
       setErrorMessage('');
       setStatusMessage(`${targetCanvas.name} 캔버스를 삭제했습니다.`);
     },
@@ -2510,28 +2508,73 @@ function App() {
     return true;
   }, []);
 
-  const applyHistorySnapshot = useCallback((snapshot: CanvasHistorySnapshot) => {
-    isApplyingHistoryRef.current = true;
-    setCanvasPresetId(snapshot.state.canvasPresetId);
-    setBackgroundMode(snapshot.state.backgroundMode);
-    setBackgroundPrimary(snapshot.state.backgroundPrimary);
-    setBackgroundSecondary(snapshot.state.backgroundSecondary);
-    setGradientAngle(snapshot.state.gradientAngle);
-    setPhoneOffset({ ...snapshot.state.phoneOffset });
-    setPhoneScale(snapshot.state.phoneScale);
-    setTextBoxes(snapshot.state.textBoxes.map((box) => ({ ...box })));
-    setSelectedTextBoxId(snapshot.selectedTextBoxId);
-    nextTextBoxIdRef.current = getNextTextBoxSerial(snapshot.state.textBoxes);
-    setIsPlacingTextBox(false);
-  }, []);
+  const applyAppHistorySnapshot = useCallback(
+    (snapshot: AppHistorySnapshot) => {
+      isApplyingHistoryRef.current = true;
+      const updatedAtByProjectId = new Map(projects.map((project) => [project.id, project.updatedAt]));
+      const now = new Date().toISOString();
+      const nextProjects: ProjectRecord[] = snapshot.projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        updatedAt: updatedAtByProjectId.get(project.id) ?? now,
+        state: cloneProjectDesignState(project.state),
+      }));
+
+      const fallbackProject = nextProjects[0];
+      const activeProject = nextProjects.find((project) => project.id === snapshot.currentProjectId) ?? fallbackProject;
+      if (!activeProject) {
+        return;
+      }
+
+      const targetCanvas =
+        activeProject.state.canvases.find((canvas) => canvas.id === snapshot.currentCanvasId) ??
+        activeProject.state.canvases.find((canvas) => canvas.id === activeProject.state.currentCanvasId) ??
+        activeProject.state.canvases[0];
+      if (!targetCanvas) {
+        return;
+      }
+
+      if (activeProject.state.currentCanvasId !== targetCanvas.id) {
+        activeProject.state.currentCanvasId = targetCanvas.id;
+      }
+
+      const targetState = targetCanvas.state;
+      const nextSelectedTextBoxId =
+        snapshot.selectedTextBoxId && targetState.textBoxes.some((box) => box.id === snapshot.selectedTextBoxId)
+          ? snapshot.selectedTextBoxId
+          : null;
+
+      loadedProjectIdRef.current = activeProject.id;
+      setProjects(nextProjects);
+      setCurrentProjectId(activeProject.id);
+      setCurrentCanvasId(targetCanvas.id);
+      setCanvasPresetId(targetState.canvasPresetId);
+      setBackgroundMode(targetState.backgroundMode);
+      setBackgroundPrimary(targetState.backgroundPrimary);
+      setBackgroundSecondary(targetState.backgroundSecondary);
+      setGradientAngle(targetState.gradientAngle);
+      setPhoneOffset({ ...targetState.phoneOffset });
+      setPhoneScale(targetState.phoneScale);
+      setTextBoxes(targetState.textBoxes.map((box) => ({ ...box })));
+      setSelectedTextBoxId(nextSelectedTextBoxId);
+      setIsPlacingTextBox(false);
+      setIsInlineTextEditing(false);
+      nextTextBoxIdRef.current = getNextTextBoxSerial(targetState.textBoxes);
+
+      if (targetState.media.kind) {
+        void restoreProjectMedia(activeProject, targetCanvas.id);
+      } else {
+        clearLoadedMedia();
+        setStatusMessage(`${activeProject.name} / ${targetCanvas.name} 캔버스를 복원했습니다.`);
+        setErrorMessage('');
+      }
+    },
+    [clearLoadedMedia, projects, restoreProjectMedia],
+  );
 
   const handleUndo = useCallback(() => {
-    if (!currentHistoryKey) {
-      return false;
-    }
-
-    const entry = historyStoreRef.current[currentHistoryKey];
-    if (!entry || !entry.present || entry.past.length === 0) {
+    const entry = historyEntryRef.current;
+    if (!entry.present || entry.past.length === 0) {
       return false;
     }
 
@@ -2540,22 +2583,18 @@ function App() {
       return false;
     }
 
-    entry.future.unshift(cloneHistorySnapshot(entry.present));
-    entry.present = cloneHistorySnapshot(previousSnapshot);
-    applyHistorySnapshot(previousSnapshot);
+    entry.future.unshift(cloneAppHistorySnapshot(entry.present));
+    entry.present = cloneAppHistorySnapshot(previousSnapshot);
+    applyAppHistorySnapshot(previousSnapshot);
     setCanUndo(entry.past.length > 0);
     setCanRedo(entry.future.length > 0);
     setStatusMessage('이전 작업으로 되돌렸습니다.');
     return true;
-  }, [applyHistorySnapshot, currentHistoryKey]);
+  }, [applyAppHistorySnapshot]);
 
   const handleRedo = useCallback(() => {
-    if (!currentHistoryKey) {
-      return false;
-    }
-
-    const entry = historyStoreRef.current[currentHistoryKey];
-    if (!entry || !entry.present || entry.future.length === 0) {
+    const entry = historyEntryRef.current;
+    if (!entry.present || entry.future.length === 0) {
       return false;
     }
 
@@ -2564,14 +2603,14 @@ function App() {
       return false;
     }
 
-    entry.past.push(cloneHistorySnapshot(entry.present));
-    entry.present = cloneHistorySnapshot(nextSnapshot);
-    applyHistorySnapshot(nextSnapshot);
+    entry.past.push(cloneAppHistorySnapshot(entry.present));
+    entry.present = cloneAppHistorySnapshot(nextSnapshot);
+    applyAppHistorySnapshot(nextSnapshot);
     setCanUndo(entry.past.length > 0);
     setCanRedo(entry.future.length > 0);
     setStatusMessage('되돌리기 작업을 다시 적용했습니다.');
     return true;
-  }, [applyHistorySnapshot, currentHistoryKey]);
+  }, [applyAppHistorySnapshot]);
 
   const drawCurrentFrame = useCallback(() => {
     const canvas = previewCanvasRef.current;
@@ -2884,59 +2923,48 @@ function App() {
   }, [assetKind, assetUrl, currentCanvasId, currentCanvasState, currentProjectId]);
 
   useEffect(() => {
-    if (!currentHistoryKey) {
+    const snapshot = buildAppHistorySnapshot();
+    if (snapshot.projects.length === 0) {
       setCanUndo(false);
       setCanRedo(false);
       return;
     }
 
-    const snapshot = buildHistorySnapshot();
-    const existing = historyStoreRef.current[currentHistoryKey];
-    if (!existing) {
-      historyStoreRef.current[currentHistoryKey] = {
-        past: [],
-        present: snapshot,
-        future: [],
-      };
+    const entry = historyEntryRef.current;
+    if (!entry.present) {
+      entry.present = snapshot;
       setCanUndo(false);
       setCanRedo(false);
-      return;
-    }
-
-    if (!existing.present) {
-      existing.present = snapshot;
-      setCanUndo(existing.past.length > 0);
-      setCanRedo(existing.future.length > 0);
       return;
     }
 
     if (isApplyingHistoryRef.current) {
       isApplyingHistoryRef.current = false;
-      existing.present = snapshot;
-      setCanUndo(existing.past.length > 0);
-      setCanRedo(existing.future.length > 0);
+      entry.present = snapshot;
+      setCanUndo(entry.past.length > 0);
+      setCanRedo(entry.future.length > 0);
       return;
     }
 
-    if (areHistorySnapshotsEqual(existing.present, snapshot)) {
-      setCanUndo(existing.past.length > 0);
-      setCanRedo(existing.future.length > 0);
+    if (areAppHistorySnapshotsEqual(entry.present, snapshot)) {
+      setCanUndo(entry.past.length > 0);
+      setCanRedo(entry.future.length > 0);
       return;
     }
 
     const timer = window.setTimeout(() => {
-      const latestEntry = historyStoreRef.current[currentHistoryKey];
-      if (!latestEntry || !latestEntry.present) {
+      const latestEntry = historyEntryRef.current;
+      if (!latestEntry.present) {
         return;
       }
 
-      if (areHistorySnapshotsEqual(latestEntry.present, snapshot)) {
+      if (areAppHistorySnapshotsEqual(latestEntry.present, snapshot)) {
         setCanUndo(latestEntry.past.length > 0);
         setCanRedo(latestEntry.future.length > 0);
         return;
       }
 
-      latestEntry.past.push(cloneHistorySnapshot(latestEntry.present));
+      latestEntry.past.push(cloneAppHistorySnapshot(latestEntry.present));
       if (latestEntry.past.length > HISTORY_LIMIT_PER_CANVAS) {
         latestEntry.past.shift();
       }
@@ -2949,7 +2977,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [buildHistorySnapshot, currentHistoryKey]);
+  }, [buildAppHistorySnapshot]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
