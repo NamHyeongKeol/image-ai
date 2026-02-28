@@ -1565,6 +1565,120 @@ function App() {
     setStatusMessage('새 캔버스를 추가했습니다.');
   }, [applyProjectState, currentProject, currentProjectState, restoreProjectMedia]);
 
+  const handleDuplicateCanvas = useCallback(
+    (sourceCanvasId: string) => {
+      if (!currentProject || !currentProjectState) {
+        return;
+      }
+
+      const sourceCanvas = currentProjectState.canvases.find((canvas) => canvas.id === sourceCanvasId);
+      if (!sourceCanvas) {
+        return;
+      }
+
+      const duplicatedCanvas = createCanvasRecord(
+        createNextCanvasName(currentProjectState.canvases),
+        cloneCanvasState(sourceCanvas.state),
+      );
+      duplicatedCanvas.thumbnailDataUrl = sourceCanvas.thumbnailDataUrl;
+
+      const now = new Date().toISOString();
+      const nextState: ProjectDesignState = {
+        canvases: [...currentProjectState.canvases, duplicatedCanvas],
+        currentCanvasId: duplicatedCanvas.id,
+      };
+      const nextProject: ProjectRecord = {
+        ...currentProject,
+        updatedAt: now,
+        state: nextState,
+      };
+
+      void (async () => {
+        let mediaCopyFailed = false;
+        if (sourceCanvas.state.media.kind) {
+          try {
+            const sourceMediaKey = buildProjectCanvasMediaKey(currentProject.id, sourceCanvas.id);
+            const duplicatedMediaKey = buildProjectCanvasMediaKey(currentProject.id, duplicatedCanvas.id);
+            const sourceMediaRecord = await readProjectMediaRecord(sourceMediaKey);
+            if (sourceMediaRecord) {
+              await saveProjectMediaRecord({
+                ...sourceMediaRecord,
+                projectId: duplicatedMediaKey,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          } catch {
+            mediaCopyFailed = true;
+          }
+        }
+
+        setProjects((previous) =>
+          previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+        );
+        applyProjectState(nextProject, duplicatedCanvas.id);
+        await restoreProjectMedia(nextProject, duplicatedCanvas.id);
+
+        if (mediaCopyFailed) {
+          setErrorMessage('캔버스는 복제했지만 미디어 복사에 실패했습니다. 필요 시 다시 업로드해 주세요.');
+        } else {
+          setErrorMessage('');
+        }
+        setStatusMessage(`${sourceCanvas.name} 캔버스를 복제해 ${duplicatedCanvas.name}를 만들었습니다.`);
+      })();
+    },
+    [applyProjectState, currentProject, currentProjectState, restoreProjectMedia],
+  );
+
+  const handleDeleteCanvas = useCallback(
+    (targetCanvasId: string) => {
+      if (!currentProject || !currentProjectState) {
+        return;
+      }
+
+      if (currentProjectState.canvases.length <= 1) {
+        setErrorMessage('캔버스는 최소 1개가 필요합니다.');
+        return;
+      }
+
+      const targetIndex = currentProjectState.canvases.findIndex((canvas) => canvas.id === targetCanvasId);
+      if (targetIndex < 0) {
+        return;
+      }
+
+      const targetCanvas = currentProjectState.canvases[targetIndex];
+      const remainingCanvases = currentProjectState.canvases.filter((canvas) => canvas.id !== targetCanvasId);
+      const fallbackCanvas = remainingCanvases[Math.max(0, targetIndex - 1)] ?? remainingCanvases[0];
+      const nextCurrentCanvasId = targetCanvasId === currentCanvasId ? fallbackCanvas.id : currentCanvasId;
+
+      const now = new Date().toISOString();
+      const nextState: ProjectDesignState = {
+        canvases: remainingCanvases,
+        currentCanvasId: nextCurrentCanvasId,
+      };
+      const nextProject: ProjectRecord = {
+        ...currentProject,
+        updatedAt: now,
+        state: nextState,
+      };
+
+      setProjects((previous) =>
+        previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+      );
+
+      if (targetCanvasId === currentCanvasId) {
+        applyProjectState(nextProject, nextCurrentCanvasId);
+        void restoreProjectMedia(nextProject, nextCurrentCanvasId);
+      }
+
+      const removedMediaKey = buildProjectCanvasMediaKey(currentProject.id, targetCanvasId);
+      void removeProjectMediaRecord(removedMediaKey).catch(() => undefined);
+
+      setErrorMessage('');
+      setStatusMessage(`${targetCanvas.name} 캔버스를 삭제했습니다.`);
+    },
+    [applyProjectState, currentCanvasId, currentProject, currentProjectState, restoreProjectMedia],
+  );
+
   const persistProjectFileToDirectory = useCallback(
     async (project: ProjectRecord) => {
       if (!connectedSaveDirectory) {
@@ -2683,37 +2797,64 @@ function App() {
               const kindLabel =
                 canvas.state.media.kind === 'video' ? '영상' : canvas.state.media.kind === 'image' ? '이미지' : '미디어 없음';
               return (
-                <button
+                <div
                   key={canvas.id}
-                  type="button"
-                  onClick={() => handleSelectCanvas(canvas.id)}
                   className={`min-w-[220px] rounded-lg border px-3 py-2 text-left transition ${
                     isActive ? 'border-blue-400 bg-blue-50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-700'
                   }`}
                 >
-                  <p className="truncate text-sm font-semibold">{canvas.name}</p>
-                  <p className="mt-1 truncate text-xs opacity-80">{canvas.state.media.name || '빈 캔버스'}</p>
-                  <p className="mt-1 text-[11px] opacity-70">{kindLabel}</p>
-                  <div className="mt-2 rounded-md border border-zinc-200/80 bg-zinc-100/70 p-1">
-                    <div
-                      className="mx-auto overflow-hidden rounded-[8px] border border-zinc-300 bg-zinc-200"
-                      style={{ width: CANVAS_THUMBNAIL_WIDTH / 2, height: CANVAS_THUMBNAIL_HEIGHT / 2 }}
-                    >
-                      {canvas.thumbnailDataUrl ? (
-                        <img
-                          src={canvas.thumbnailDataUrl}
-                          alt={`${canvas.name} 미리보기`}
-                          className="h-full w-full object-cover"
-                          draggable={false}
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center bg-zinc-100 text-[10px] text-zinc-500">
-                          미리보기 없음
-                        </div>
-                      )}
+                  <div className="flex items-start gap-2">
+                    <button type="button" onClick={() => handleSelectCanvas(canvas.id)} className="min-w-0 flex-1 text-left">
+                      <p className="truncate text-sm font-semibold">{canvas.name}</p>
+                      <p className="mt-1 truncate text-xs opacity-80">{canvas.state.media.name || '빈 캔버스'}</p>
+                      <p className="mt-1 text-[11px] opacity-70">{kindLabel}</p>
+                    </button>
+
+                    <div className="flex shrink-0 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleDuplicateCanvas(canvas.id)}
+                        className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-600 hover:bg-zinc-50"
+                        title="캔버스 복제"
+                        aria-label={`${canvas.name} 복제`}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCanvas(canvas.id)}
+                        disabled={currentProjectCanvases.length <= 1}
+                        className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        title={currentProjectCanvases.length <= 1 ? '캔버스는 최소 1개 필요' : '캔버스 삭제'}
+                        aria-label={`${canvas.name} 삭제`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </div>
-                </button>
+
+                  <button type="button" onClick={() => handleSelectCanvas(canvas.id)} className="mt-2 block w-full">
+                    <div className="rounded-md border border-zinc-200/80 bg-zinc-100/70 p-1">
+                      <div
+                        className="mx-auto overflow-hidden rounded-[8px] border border-zinc-300 bg-zinc-200"
+                        style={{ width: CANVAS_THUMBNAIL_WIDTH / 2, height: CANVAS_THUMBNAIL_HEIGHT / 2 }}
+                      >
+                        {canvas.thumbnailDataUrl ? (
+                          <img
+                            src={canvas.thumbnailDataUrl}
+                            alt={`${canvas.name} 미리보기`}
+                            className="h-full w-full object-cover"
+                            draggable={false}
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center bg-zinc-100 text-[10px] text-zinc-500">
+                            미리보기 없음
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                </div>
               );
             })}
             <Button
