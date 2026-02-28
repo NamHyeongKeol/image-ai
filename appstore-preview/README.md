@@ -24,6 +24,12 @@ It is built with React + TypeScript + Tailwind + shadcn-style UI components and 
   - Supports content and structural changes (including canvas/project delete/recover)
   - History is in-memory and resets after page refresh
 
+## UI Screenshots
+
+![Design Settings and Live Preview](docs/screenshots/design-settings-live-preview.png)
+
+![Canvas List Overview](docs/screenshots/canvas-list-overview.png)
+
 ## Canvas Presets
 
 Includes `886x1920` plus additional iPhone-focused presets:
