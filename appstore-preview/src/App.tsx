@@ -5,7 +5,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Download, Film, Image as ImageIcon, Palette, Plus, RotateCcw, Save, Trash2, Upload } from 'lucide-react';
+import { Download, Film, FolderOpen, Image as ImageIcon, Palette, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -75,31 +75,39 @@ interface Artifact {
   url: string;
 }
 
-interface SavedMediaPayload {
-  name: string;
-  type: string;
-  dataUrl: string;
+interface ProjectDesignState {
+  backgroundMode: BackgroundMode;
+  backgroundPrimary: string;
+  backgroundSecondary: string;
+  gradientAngle: number;
+  phoneOffset: Offset;
+  phoneScale: number;
+  textBoxes: TextBoxModel[];
+  media: {
+    kind: MediaKind;
+    name: string;
+  };
 }
 
-interface SavedProjectPayload {
+interface ProjectRecord {
+  id: string;
+  name: string;
+  updatedAt: string;
+  state: ProjectDesignState;
+}
+
+interface ProjectFilePayload {
   version: 1;
-  savedAt: string;
+  project: {
+    id: string;
+    name: string;
+    updatedAt: string;
+  };
   canvas: {
     width: number;
     height: number;
   };
-  background: {
-    mode: BackgroundMode;
-    primary: string;
-    secondary: string;
-    gradientAngle: number;
-  };
-  phone: {
-    offset: Offset;
-    scale: number;
-  };
-  textBoxes: TextBoxModel[];
-  media: SavedMediaPayload | null;
+  state: ProjectDesignState;
 }
 
 interface DrawOptions {
@@ -149,6 +157,143 @@ const DEFAULTS = {
   gradientAngle: 26,
   phoneScale: 1,
 };
+
+const LOCAL_PROJECTS_STORAGE_KEY = 'appstore-preview.projects.v1';
+const LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
+const PROJECT_AUTOSAVE_DELAY_MS = 700;
+
+interface FileHandleLike {
+  createWritable: () => Promise<{
+    write: (data: string) => Promise<void>;
+    close: () => Promise<void>;
+  }>;
+}
+
+interface DirectoryHandleLike {
+  getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<DirectoryHandleLike>;
+  getFileHandle: (name: string, options?: { create?: boolean }) => Promise<FileHandleLike>;
+}
+
+function createEmptyDesignState(): ProjectDesignState {
+  return {
+    backgroundMode: DEFAULTS.backgroundMode,
+    backgroundPrimary: DEFAULTS.backgroundPrimary,
+    backgroundSecondary: DEFAULTS.backgroundSecondary,
+    gradientAngle: DEFAULTS.gradientAngle,
+    phoneOffset: { x: 0, y: 0 },
+    phoneScale: DEFAULTS.phoneScale,
+    textBoxes: [],
+    media: {
+      kind: null,
+      name: '',
+    },
+  };
+}
+
+function createProjectId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `project-${crypto.randomUUID()}`;
+  }
+
+  return `project-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+function createProjectRecord(name: string, state: ProjectDesignState = createEmptyDesignState()): ProjectRecord {
+  return {
+    id: createProjectId(),
+    name,
+    updatedAt: new Date().toISOString(),
+    state: {
+      ...state,
+      phoneOffset: { ...state.phoneOffset },
+      textBoxes: state.textBoxes.map((box) => ({ ...box })),
+      media: { ...state.media },
+    },
+  };
+}
+
+function getNextTextBoxSerial(textBoxes: TextBoxModel[]) {
+  return (
+    textBoxes.reduce((maximum, box) => {
+      const numeric = Number(box.id.replace(/^text-/, ''));
+      if (Number.isNaN(numeric)) {
+        return maximum;
+      }
+
+      return Math.max(maximum, numeric);
+    }, 0) + 1
+  );
+}
+
+function createNextProjectName(projects: ProjectRecord[]) {
+  const existing = new Set(projects.map((project) => project.name));
+  let index = projects.length + 1;
+
+  while (existing.has(`프로젝트 ${index}`)) {
+    index += 1;
+  }
+
+  return `프로젝트 ${index}`;
+}
+
+function sanitizeFileNameSegment(name: string) {
+  return name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 60) || 'project';
+}
+
+function parseStoredProjects(raw: string | null) {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((item): item is ProjectRecord => {
+      return Boolean(
+        item &&
+          typeof item === 'object' &&
+          'id' in item &&
+          'name' in item &&
+          'updatedAt' in item &&
+          'state' in item,
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function getInitialProjectStore() {
+  const fallback = createProjectRecord('프로젝트 1');
+
+  if (typeof window === 'undefined') {
+    return {
+      projects: [fallback],
+      currentProjectId: fallback.id,
+    };
+  }
+
+  const storedProjects = parseStoredProjects(window.localStorage.getItem(LOCAL_PROJECTS_STORAGE_KEY));
+  if (storedProjects.length === 0) {
+    return {
+      projects: [fallback],
+      currentProjectId: fallback.id,
+    };
+  }
+
+  const storedCurrentProjectId = window.localStorage.getItem(LOCAL_CURRENT_PROJECT_STORAGE_KEY);
+  const currentProjectId = storedProjects.some((project) => project.id === storedCurrentProjectId)
+    ? (storedCurrentProjectId as string)
+    : storedProjects[0].id;
+
+  return {
+    projects: storedProjects,
+    currentProjectId,
+  };
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -591,16 +736,17 @@ async function blobFromCanvas(canvas: HTMLCanvasElement) {
   });
 }
 
-async function fileToDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('미디어 파일 인코딩에 실패했습니다.'));
-    reader.readAsDataURL(file);
-  });
-}
-
 function App() {
+  const initialProjectStoreRef = useRef<ReturnType<typeof getInitialProjectStore> | null>(null);
+  if (!initialProjectStoreRef.current) {
+    initialProjectStoreRef.current = getInitialProjectStore();
+  }
+
+  const initialProjectStore = initialProjectStoreRef.current;
+  const initialProject =
+    initialProjectStore.projects.find((project) => project.id === initialProjectStore.currentProjectId) ??
+    initialProjectStore.projects[0];
+
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -613,22 +759,27 @@ function App() {
   const suppressCanvasClickRef = useRef(false);
   const uploadDropDepthRef = useRef(0);
   const canvasDropDepthRef = useRef(0);
-  const nextTextBoxIdRef = useRef(1);
+  const nextTextBoxIdRef = useRef(getNextTextBoxSerial(initialProject.state.textBoxes));
+  const autoSaveErrorNotifiedRef = useRef(false);
 
-  const [assetKind, setAssetKind] = useState<MediaKind>(null);
+  const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
+  const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
+  const [connectedSaveDirectory, setConnectedSaveDirectory] = useState<DirectoryHandleLike | null>(null);
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState('');
+
+  const [assetKind, setAssetKind] = useState<MediaKind>(initialProject.state.media.kind);
   const [assetUrl, setAssetUrl] = useState<string | null>(null);
-  const [assetName, setAssetName] = useState('');
-  const [assetFile, setAssetFile] = useState<File | null>(null);
+  const [assetName, setAssetName] = useState(initialProject.state.media.name);
 
-  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(DEFAULTS.backgroundMode);
-  const [backgroundPrimary, setBackgroundPrimary] = useState(DEFAULTS.backgroundPrimary);
-  const [backgroundSecondary, setBackgroundSecondary] = useState(DEFAULTS.backgroundSecondary);
-  const [gradientAngle, setGradientAngle] = useState(DEFAULTS.gradientAngle);
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(initialProject.state.backgroundMode);
+  const [backgroundPrimary, setBackgroundPrimary] = useState(initialProject.state.backgroundPrimary);
+  const [backgroundSecondary, setBackgroundSecondary] = useState(initialProject.state.backgroundSecondary);
+  const [gradientAngle, setGradientAngle] = useState(initialProject.state.gradientAngle);
 
-  const [phoneOffset, setPhoneOffset] = useState<Offset>({ x: 0, y: 0 });
-  const [phoneScale, setPhoneScale] = useState(DEFAULTS.phoneScale);
+  const [phoneOffset, setPhoneOffset] = useState<Offset>({ ...initialProject.state.phoneOffset });
+  const [phoneScale, setPhoneScale] = useState(initialProject.state.phoneScale);
 
-  const [textBoxes, setTextBoxes] = useState<TextBoxModel[]>([]);
+  const [textBoxes, setTextBoxes] = useState<TextBoxModel[]>(initialProject.state.textBoxes.map((box) => ({ ...box })));
   const [selectedTextBoxId, setSelectedTextBoxId] = useState<string | null>(null);
   const [isPlacingTextBox, setIsPlacingTextBox] = useState(false);
 
@@ -644,6 +795,38 @@ function App() {
   const selectedTextBox = useMemo(
     () => textBoxes.find((box) => box.id === selectedTextBoxId) ?? null,
     [textBoxes, selectedTextBoxId],
+  );
+
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === currentProjectId) ?? null,
+    [projects, currentProjectId],
+  );
+
+  const currentDesignState = useMemo<ProjectDesignState>(
+    () => ({
+      backgroundMode,
+      backgroundPrimary,
+      backgroundSecondary,
+      gradientAngle,
+      phoneOffset,
+      phoneScale,
+      textBoxes: textBoxes.map((box) => ({ ...box })),
+      media: {
+        kind: assetKind,
+        name: assetName,
+      },
+    }),
+    [
+      assetKind,
+      assetName,
+      backgroundMode,
+      backgroundPrimary,
+      backgroundSecondary,
+      gradientAngle,
+      phoneOffset,
+      phoneScale,
+      textBoxes,
+    ],
   );
 
   const toCanvasPoint = useCallback((clientX: number, clientY: number) => {
@@ -706,6 +889,15 @@ function App() {
     setAssetUrl(nextUrl);
   }, []);
 
+  const clearLoadedMedia = useCallback(() => {
+    videoRef.current?.pause();
+    videoRef.current = null;
+    imageRef.current = null;
+    setAssetKind(null);
+    setAssetName('');
+    setAssetObjectUrl(null);
+  }, [setAssetObjectUrl]);
+
   const setArtifactBlob = useCallback((blob: Blob, kind: ArtifactKind, mimeType: string, fileName: string) => {
     if (artifactUrlRef.current) {
       URL.revokeObjectURL(artifactUrlRef.current);
@@ -720,6 +912,127 @@ function App() {
     link.href = url;
     link.download = fileName;
     link.click();
+  }, []);
+
+  const applyProjectState = useCallback(
+    (project: ProjectRecord) => {
+      setBackgroundMode(project.state.backgroundMode);
+      setBackgroundPrimary(project.state.backgroundPrimary);
+      setBackgroundSecondary(project.state.backgroundSecondary);
+      setGradientAngle(project.state.gradientAngle);
+      setPhoneOffset({ ...project.state.phoneOffset });
+      setPhoneScale(project.state.phoneScale);
+      setTextBoxes(project.state.textBoxes.map((box) => ({ ...box })));
+      setSelectedTextBoxId(null);
+      setIsPlacingTextBox(false);
+      nextTextBoxIdRef.current = getNextTextBoxSerial(project.state.textBoxes);
+      clearLoadedMedia();
+      setStatusMessage(`${project.name} 프로젝트를 불러왔습니다. 미디어는 다시 업로드해 주세요.`);
+      setErrorMessage('');
+    },
+    [clearLoadedMedia],
+  );
+
+  const handleSelectProject = useCallback(
+    (nextProjectId: string) => {
+      const nextProject = projects.find((project) => project.id === nextProjectId);
+      if (!nextProject) {
+        return;
+      }
+
+      const now = new Date().toISOString();
+      setProjects((previous) =>
+        previous.map((project) =>
+          project.id === currentProjectId
+            ? {
+                ...project,
+                updatedAt: now,
+                state: currentDesignState,
+              }
+            : project,
+        ),
+      );
+      setCurrentProjectId(nextProject.id);
+      applyProjectState(nextProject);
+    },
+    [applyProjectState, currentDesignState, currentProjectId, projects],
+  );
+
+  const handleCreateProject = useCallback(() => {
+    const now = new Date().toISOString();
+    const newProject = createProjectRecord(createNextProjectName(projects));
+    setProjects((previous) => [
+      ...previous.map((project) =>
+        project.id === currentProjectId
+          ? {
+              ...project,
+              updatedAt: now,
+              state: currentDesignState,
+            }
+          : project,
+      ),
+      newProject,
+    ]);
+    setCurrentProjectId(newProject.id);
+    applyProjectState(newProject);
+  }, [applyProjectState, currentDesignState, currentProjectId, projects]);
+
+  const persistProjectFileToDirectory = useCallback(
+    async (project: ProjectRecord) => {
+      if (!connectedSaveDirectory) {
+        return;
+      }
+
+      const payload: ProjectFilePayload = {
+        version: 1,
+        project: {
+          id: project.id,
+          name: project.name,
+          updatedAt: project.updatedAt,
+        },
+        canvas: {
+          width: CANVAS_PRESET.width,
+          height: CANVAS_PRESET.height,
+        },
+        state: project.state,
+      };
+
+      const savesDir = await connectedSaveDirectory.getDirectoryHandle('.project-saves', { create: true });
+      const safeName = sanitizeFileNameSegment(project.name);
+      const fileHandle = await savesDir.getFileHandle(`${safeName}-${project.id}.appstore-preview-project.json`, {
+        create: true,
+      });
+      const writable = await fileHandle.createWritable();
+      await writable.write(JSON.stringify(payload, null, 2));
+      await writable.close();
+    },
+    [connectedSaveDirectory],
+  );
+
+  const handleConnectSaveDirectory = useCallback(async () => {
+    const pickerWindow = window as Window & {
+      showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<DirectoryHandleLike>;
+    };
+
+    if (typeof pickerWindow.showDirectoryPicker !== 'function') {
+      setErrorMessage('현재 브라우저는 폴더 자동 저장을 지원하지 않습니다. Chromium 계열 브라우저를 사용해 주세요.');
+      return;
+    }
+
+    try {
+      const directoryHandle = await pickerWindow.showDirectoryPicker({ mode: 'readwrite' });
+      setConnectedSaveDirectory(directoryHandle);
+      autoSaveErrorNotifiedRef.current = false;
+      setStatusMessage('저장 폴더가 연결되었습니다. 변경사항을 .project-saves에 자동 저장합니다.');
+      setErrorMessage('');
+    } catch (error) {
+      const domError = error as DOMException;
+      if (domError?.name === 'AbortError') {
+        return;
+      }
+
+      setErrorMessage(error instanceof Error ? error.message : '저장 폴더 연결에 실패했습니다.');
+    }
   }, []);
 
   const addTextBoxAt = useCallback((point: Offset) => {
@@ -833,6 +1146,70 @@ function App() {
   }, [selectedTextBoxId, textBoxes]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const now = new Date().toISOString();
+      setProjects((previous) =>
+        previous.map((project) =>
+          project.id === currentProjectId
+            ? {
+                ...project,
+                updatedAt: now,
+                state: currentDesignState,
+              }
+            : project,
+        ),
+      );
+    }, PROJECT_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [currentDesignState, currentProjectId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(LOCAL_PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(LOCAL_CURRENT_PROJECT_STORAGE_KEY, currentProjectId);
+  }, [currentProjectId]);
+
+  useEffect(() => {
+    if (!connectedSaveDirectory || !currentProject) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await persistProjectFileToDirectory(currentProject);
+          autoSaveErrorNotifiedRef.current = false;
+          setLastAutoSavedAt(new Date().toLocaleTimeString('ko-KR', { hour12: false }));
+        } catch (error) {
+          if (!autoSaveErrorNotifiedRef.current) {
+            setErrorMessage(
+              error instanceof Error ? error.message : '자동 파일 저장에 실패했습니다. 저장 폴더를 다시 연결해 주세요.',
+            );
+            autoSaveErrorNotifiedRef.current = true;
+          }
+        }
+      })();
+    }, PROJECT_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [connectedSaveDirectory, currentProject, persistProjectFileToDirectory]);
+
+  useEffect(() => {
     return () => {
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
@@ -870,7 +1247,6 @@ function App() {
       const nextUrl = URL.createObjectURL(file);
       setAssetObjectUrl(nextUrl);
       setAssetName(file.name);
-      setAssetFile(file);
 
       try {
         if (file.type.startsWith('image/')) {
@@ -916,7 +1292,6 @@ function App() {
         videoRef.current = null;
         setAssetKind(null);
         setAssetName('');
-        setAssetFile(null);
         setAssetObjectUrl(null);
         setErrorMessage(error instanceof Error ? error.message : '업로드 처리에 실패했습니다.');
         setStatusMessage('파일을 다시 선택해 주세요.');
@@ -1435,102 +1810,6 @@ function App() {
     textBoxes,
   ]);
 
-  const handleSaveProjectFile = useCallback(async () => {
-    setErrorMessage('');
-
-    try {
-      const mediaPayload = assetFile
-        ? {
-            name: assetFile.name,
-            type: assetFile.type,
-            dataUrl: await fileToDataUrl(assetFile),
-          }
-        : null;
-
-      const payload: SavedProjectPayload = {
-        version: 1,
-        savedAt: new Date().toISOString(),
-        canvas: {
-          width: CANVAS_PRESET.width,
-          height: CANVAS_PRESET.height,
-        },
-        background: {
-          mode: backgroundMode,
-          primary: backgroundPrimary,
-          secondary: backgroundSecondary,
-          gradientAngle,
-        },
-        phone: {
-          offset: phoneOffset,
-          scale: phoneScale,
-        },
-        textBoxes,
-        media: mediaPayload,
-      };
-
-      const suggestedName = `appstore-preview-${Date.now()}.appstore-preview-project.json`;
-      const projectBlob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: 'application/json',
-      });
-
-      const pickerWindow = window as Window & {
-        showSaveFilePicker?: (options?: {
-          suggestedName?: string;
-          types?: Array<{
-            description?: string;
-            accept: Record<string, string[]>;
-          }>;
-        }) => Promise<{
-          createWritable: () => Promise<{
-            write: (data: Blob) => Promise<void>;
-            close: () => Promise<void>;
-          }>;
-        }>;
-      };
-
-      if (typeof pickerWindow.showSaveFilePicker === 'function') {
-        const handle = await pickerWindow.showSaveFilePicker({
-          suggestedName,
-          types: [
-            {
-              description: 'Appstore Preview Project',
-              accept: {
-                'application/json': ['.json'],
-              },
-            },
-          ],
-        });
-
-        const writable = await handle.createWritable();
-        await writable.write(projectBlob);
-        await writable.close();
-      } else {
-        const downloadUrl = URL.createObjectURL(projectBlob);
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = suggestedName;
-        link.click();
-        URL.revokeObjectURL(downloadUrl);
-      }
-
-      setStatusMessage(
-        '프로젝트 파일 저장 완료. 파일 저장 창에서 appstore-preview/.project-saves 경로를 선택하면 프로젝트 폴더에 저장됩니다.',
-      );
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '프로젝트 파일 저장에 실패했습니다.');
-      setStatusMessage('저장 경로를 다시 선택해 주세요.');
-    }
-  }, [
-    assetFile,
-    backgroundMode,
-    backgroundPrimary,
-    backgroundSecondary,
-    gradientAngle,
-    phoneOffset,
-    phoneScale,
-    textBoxes,
-  ]);
-
   const handleExport = useCallback(async () => {
     if (!assetKind) {
       setErrorMessage('먼저 이미지 또는 영상을 업로드해 주세요.');
@@ -1560,10 +1839,49 @@ function App() {
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#d9f4ff_0,#f2f4f7_42%,#eef2ff_100%)] px-4 py-8 text-zinc-900">
       <div className="mx-auto max-w-7xl">
         <header className="rounded-2xl border border-white/70 bg-white/80 px-6 py-5 shadow-sm backdrop-blur">
-          <h1 className="text-2xl font-semibold tracking-tight">App Store Preview Composer</h1>
-          <p className="mt-2 text-sm text-zinc-600">
-            iPhone 규격(886x1920) 기준으로 업로드/드래그 배치 후 결과물을 생성합니다.
-          </p>
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">App Store Preview Composer</h1>
+              <p className="mt-2 text-sm text-zinc-600">
+                iPhone 규격(886x1920) 기준으로 업로드/드래그 배치 후 결과물을 생성합니다.
+              </p>
+            </div>
+
+            <div className="w-full max-w-md space-y-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+              <Label className="text-xs text-zinc-500">프로젝트</Label>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={currentProjectId}
+                  onChange={(event) => handleSelectProject(event.target.value)}
+                  className="h-10 min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 text-sm"
+                >
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+                <Button type="button" variant="secondary" onClick={handleCreateProject}>
+                  <Plus className="h-4 w-4" />
+                  새 프로젝트
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" variant="outline" onClick={handleConnectSaveDirectory}>
+                  <FolderOpen className="h-4 w-4" />
+                  자동저장 폴더 연결
+                </Button>
+                <span className="text-xs text-zinc-500">
+                  {connectedSaveDirectory ? '.project-saves 자동저장 연결됨' : '폴더 미연결'}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500">
+                {currentProject ? `${currentProject.name} 선택됨` : '프로젝트 없음'}
+                {lastAutoSavedAt ? ` · 마지막 자동저장 ${lastAutoSavedAt}` : ''}
+              </p>
+            </div>
+          </div>
         </header>
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[430px_minmax(0,1fr)]">
@@ -1827,10 +2145,6 @@ function App() {
                 <Button type="button" variant="outline" onClick={resetStyle}>
                   <RotateCcw className="h-4 w-4" />
                   배경/프레임 초기화
-                </Button>
-                <Button type="button" variant="outline" onClick={handleSaveProjectFile}>
-                  <Save className="h-4 w-4" />
-                  프로젝트 저장(JSON)
                 </Button>
                 <Button type="button" onClick={handleExport} disabled={isExporting || !assetKind}>
                   <Download className="h-4 w-4" />
