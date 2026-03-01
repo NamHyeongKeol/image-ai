@@ -110,6 +110,7 @@ export interface TextBoxMeta {
   lineClassification: 'single-line' | 'two-lines' | 'three-or-more-lines';
   hasManualLineBreak: boolean;
   wrappedByWidth: boolean;
+  textWidth: number;
   maxLineWidth: number;
   font: {
     key: FontKey;
@@ -269,6 +270,17 @@ function measureTextWidth(ctx: MeasureContext | null, text: string) {
   return ctx.measureText(text).width;
 }
 
+function normalizeTextForWidth(text: string) {
+  const normalizedLines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (normalizedLines.length === 0) {
+    return '';
+  }
+  return normalizedLines.join(' ').trim();
+}
+
 export function wrapTextToLines(ctx: MeasureContext | null, text: string, maxWidth: number) {
   const paragraphs = text.split('\n');
   const lines: string[] = [];
@@ -333,6 +345,8 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
 
   const lines = wrapTextToLines(measureContext, box.text, width);
   const lineCount = lines.length;
+  const normalizedText = normalizeTextForWidth(box.text);
+  const textWidth = normalizedText.length > 0 ? measureTextWidth(measureContext, normalizedText) : 0;
   const maxLineWidth = lines.reduce((acc, line) => Math.max(acc, measureTextWidth(measureContext, line)), 0);
   const height = Math.max(lineHeight, lineCount * lineHeight);
 
@@ -359,6 +373,7 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
     lineClassification,
     hasManualLineBreak,
     wrappedByWidth,
+    textWidth,
     maxLineWidth,
     font: {
       key: box.fontKey,
