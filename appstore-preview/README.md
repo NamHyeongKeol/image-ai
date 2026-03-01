@@ -12,10 +12,23 @@ It is built with React + TypeScript + Tailwind + shadcn-style UI components and 
 
 This project now includes an optional local API server for i18n and batch automation.
 
-Base URL:
+Base URLs:
+- Browser (recommended): `/api` (proxied by Vite dev server)
 - `http://localhost:4318/api`
 
-Run:
+Run both Web + API (single command):
+
+```bash
+npm run dev
+```
+
+Recommended for local use:
+
+```bash
+npm run dev
+```
+
+Standalone API only:
 
 ```bash
 npm run api:dev

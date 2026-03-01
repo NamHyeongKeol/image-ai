@@ -54,9 +54,17 @@ Purpose:
 - i18n automation workflow over saved projects/canvases/text boxes
 
 Base URL:
+- Browser (recommended): `/api` (Vite proxy)
 - `http://localhost:4318/api`
 
-Run API server:
+Run both Web + API with one command:
+
+```bash
+cd appstore-preview
+npm run dev
+```
+
+API only (optional):
 
 ```bash
 cd appstore-preview
