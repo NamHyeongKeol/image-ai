@@ -13,6 +13,7 @@ It is built with React + TypeScript + Tailwind + shadcn-style UI components, wit
 This project now includes an optional local API server for i18n and batch automation.
 
 Base URLs:
+
 - Browser (recommended): `/api` (proxied by Vite dev server)
 - `http://localhost:4318/api`
 
@@ -35,6 +36,7 @@ npm run api:dev
 ```
 
 Main endpoints:
+
 - `GET /api/projects`
   - List all projects visible to the API (`.project-saves/*.appstore-preview-project.json`)
 - `GET /api/projects/:projectId`
@@ -67,9 +69,7 @@ Main endpoints:
 - `PATCH /api/projects/:projectId/canvases/:canvasId/phone`
   - Move/scale iPhone frame (`x`, `y`, `phoneScale` or `offset: { x, y }`)
 - `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
-  - Text box meta including wrapped lines, `lineCount`, `textWidth`, and `visualTextWidth`
-  - `textWidth`: normalized single-line width (trim per line + joined with one space)
-  - `visualTextWidth`: rendered visual width (max wrapped line width in canvas coordinates)
+  - Text box meta including wrapped lines, `lineCount`, `lineClassification`, `wrappedByWidth`
 - `GET /api/projects/:projectId/canvases/:canvasId/meta`
   - Full canvas shape meta (background, iPhone frame, all text boxes)
 - `GET /api/projects/:projectId/meta`
@@ -78,6 +78,7 @@ Main endpoints:
   - Export ZIP with project JSON, per-canvas meta/state, i18n text map, preview PNG
 
 Notes:
+
 - ZIP export includes media references but does not embed original media binaries.
 - API media binaries are stored under `.project-saves/media/<projectId>/<canvasId>/`.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
