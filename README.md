@@ -139,6 +139,8 @@ Notes:
 - ZIP export contains project/canvas JSON + i18n text map + preview PNG (media binaries are referenced, not embedded).
 - In integrated dev mode (`npm run dev`), GUI projects and API projects are auto-merged/synced.
 - Unified storage path: `appstore-preview/.project-saves/*.appstore-preview-project.json`.
+- GUI/API now share one SoT on API file storage; runtime project state no longer depends on browser `localStorage`.
+- Legacy `localStorage` project data is imported once to API storage (migration) for backward compatibility.
 - Full read endpoints support:
   - `includeMeta=true|false` (default: `true`)
   - `includeRawFile=true|false` (default: `true`)

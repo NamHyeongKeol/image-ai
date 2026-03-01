@@ -63,7 +63,9 @@ Main endpoints:
 Notes:
 - ZIP export includes media references but does not embed original media binaries.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
-- When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs the active GUI project back to API.
+- When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs project changes back to API.
+- Project SoT is the API file storage (`.project-saves/*.appstore-preview-project.json`) for both GUI and API reads/writes.
+- Legacy browser `localStorage` project data is used only for one-time migration to API storage, then no longer used as runtime state.
 - For `full` read endpoints, query params are supported:
   - `includeMeta=true|false` (default: `true`)
   - `includeRawFile=true|false` (default: `true`)

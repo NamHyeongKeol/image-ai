@@ -232,8 +232,9 @@ const DEFAULTS = {
   phoneScale: 1,
 };
 
-const LOCAL_PROJECTS_STORAGE_KEY = 'appstore-preview.projects.v1';
-const LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
+const LEGACY_LOCAL_PROJECTS_STORAGE_KEY = 'appstore-preview.projects.v1';
+const LEGACY_LOCAL_CURRENT_PROJECT_STORAGE_KEY = 'appstore-preview.current-project.v1';
+const API_SOT_MIGRATION_MARKER_KEY = 'appstore-preview.api-sot-migrated.v1';
 const PROJECT_AUTOSAVE_DELAY_MS = 700;
 const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
@@ -657,25 +658,23 @@ function parseStoredProjects(raw: string | null) {
   }
 }
 
-function getInitialProjectStore() {
-  const fallback = createProjectRecord('프로젝트 1');
-
+function getLegacyLocalProjectStore() {
   if (typeof window === 'undefined') {
     return {
-      projects: [fallback],
-      currentProjectId: fallback.id,
+      projects: [] as ProjectRecord[],
+      currentProjectId: '',
     };
   }
 
-  const storedProjects = parseStoredProjects(window.localStorage.getItem(LOCAL_PROJECTS_STORAGE_KEY));
+  const storedProjects = parseStoredProjects(window.localStorage.getItem(LEGACY_LOCAL_PROJECTS_STORAGE_KEY));
   if (storedProjects.length === 0) {
     return {
-      projects: [fallback],
-      currentProjectId: fallback.id,
+      projects: [] as ProjectRecord[],
+      currentProjectId: '',
     };
   }
 
-  const storedCurrentProjectId = window.localStorage.getItem(LOCAL_CURRENT_PROJECT_STORAGE_KEY);
+  const storedCurrentProjectId = window.localStorage.getItem(LEGACY_LOCAL_CURRENT_PROJECT_STORAGE_KEY);
   const currentProjectId = storedProjects.some((project) => project.id === storedCurrentProjectId)
     ? (storedCurrentProjectId as string)
     : storedProjects[0].id;
@@ -1336,15 +1335,11 @@ async function blobFromCanvas(canvas: HTMLCanvasElement) {
 }
 
 function App() {
-  const initialProjectStoreRef = useRef<ReturnType<typeof getInitialProjectStore> | null>(null);
-  if (!initialProjectStoreRef.current) {
-    initialProjectStoreRef.current = getInitialProjectStore();
+  const initialProjectRef = useRef<ProjectRecord | null>(null);
+  if (!initialProjectRef.current) {
+    initialProjectRef.current = createProjectRecord('프로젝트 1');
   }
-
-  const initialProjectStore = initialProjectStoreRef.current;
-  const initialProject =
-    initialProjectStore.projects.find((project) => project.id === initialProjectStore.currentProjectId) ??
-    initialProjectStore.projects[0];
+  const initialProject = initialProjectRef.current;
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const inlineTextEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1373,7 +1368,7 @@ function App() {
   const apiHydrationCompletedRef = useRef(false);
   const lastCanvasPreloadSignatureRef = useRef('');
 
-  const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
+  const [projects, setProjects] = useState<ProjectRecord[]>([initialProject]);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
   const [currentCanvasId, setCurrentCanvasId] = useState(initialCanvas.id);
   const [connectedSaveDirectory, setConnectedSaveDirectory] = useState<DirectoryHandleLike | null>(null);
@@ -3042,123 +3037,174 @@ function App() {
     const controller = new AbortController();
 
     void (async () => {
+      let hydrationSucceeded = false;
       try {
+        const legacyStore = getLegacyLocalProjectStore();
+        const shouldMigrateLegacyLocalProjects =
+          typeof window !== 'undefined' &&
+          legacyStore.projects.length > 0 &&
+          window.localStorage.getItem(API_SOT_MIGRATION_MARKER_KEY) !== 'done';
+
+        if (shouldMigrateLegacyLocalProjects) {
+          await Promise.allSettled(
+            legacyStore.projects.map((project) =>
+              fetch('/api/projects/import', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  payload: {
+                    id: project.id,
+                    name: project.name,
+                    updatedAt: project.updatedAt,
+                    state: project.state,
+                  },
+                }),
+                signal: controller.signal,
+              }),
+            ),
+          );
+
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem(API_SOT_MIGRATION_MARKER_KEY, 'done');
+          }
+        }
+
         const listResponse = await fetch('/api/projects', { signal: controller.signal });
         if (!listResponse.ok) {
-          return;
+          throw new Error('API project list read failed.');
         }
 
         const listPayload = (await listResponse.json()) as ApiProjectListPayload;
         const summaries = Array.isArray(listPayload.projects) ? listPayload.projects : [];
-        if (summaries.length === 0) {
-          return;
-        }
-
         const fetchedProjects = await Promise.all(
           summaries.map(async (summary) => {
-            try {
-              const detailResponse = await fetch(`/api/projects/${encodeURIComponent(summary.id)}`, {
-                signal: controller.signal,
-              });
-              if (!detailResponse.ok) {
-                return null;
-              }
-
-              const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
-              const projectId = detailPayload.project?.id ?? summary.id;
-              const projectName = detailPayload.project?.name ?? summary.name;
-              const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
-
-              return {
-                id: projectId,
-                name: projectName,
-                updatedAt,
-                state: sanitizeProjectState(detailPayload.state),
-              } satisfies ProjectRecord;
-            } catch {
+            const detailResponse = await fetch(`/api/projects/${encodeURIComponent(summary.id)}`, {
+              signal: controller.signal,
+            });
+            if (!detailResponse.ok) {
               return null;
             }
+
+            const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
+            const projectId = detailPayload.project?.id ?? summary.id;
+            const projectName = detailPayload.project?.name ?? summary.name;
+            const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
+
+            return {
+              id: projectId,
+              name: projectName,
+              updatedAt,
+              state: sanitizeProjectState(detailPayload.state),
+            } satisfies ProjectRecord;
           }),
         );
 
-        if (controller.signal.aborted) {
-          return;
-        }
+        let normalizedFetched = fetchedProjects.filter((project): project is ProjectRecord => Boolean(project));
 
-        const normalizedFetched = fetchedProjects.filter((project): project is ProjectRecord => Boolean(project));
         if (normalizedFetched.length === 0) {
-          return;
-        }
-
-        setProjects((previous) => {
-          const byId = new Map(previous.map((project) => [project.id, project]));
-          let changed = false;
-
-          for (const fetched of normalizedFetched) {
-            const existing = byId.get(fetched.id);
-            if (!existing) {
-              byId.set(fetched.id, fetched);
-              changed = true;
-              continue;
-            }
-
-            const existingUpdatedAt = Date.parse(existing.updatedAt);
-            const fetchedUpdatedAt = Date.parse(fetched.updatedAt);
-            const shouldReplace =
-              Number.isNaN(existingUpdatedAt) ||
-              (!Number.isNaN(fetchedUpdatedAt) && fetchedUpdatedAt > existingUpdatedAt);
-
-            if (shouldReplace) {
-              byId.set(fetched.id, fetched);
-              changed = true;
-            }
-          }
-
-          if (!changed) {
-            return previous;
-          }
-
-          return Array.from(byId.values()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-        });
-
-        setStatusMessage(`${normalizedFetched.length}개 API 프로젝트를 불러왔습니다.`);
-      } catch {
-        // Ignore: API can be unavailable in pure frontend usage.
-      } finally {
-        apiHydrationCompletedRef.current = true;
-      }
-    })();
-
-    return () => {
-      controller.abort();
-      apiHydrationCompletedRef.current = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!apiHydrationCompletedRef.current || !currentProject || !currentProjectState) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          await fetch('/api/projects/import', {
+          const createResponse = await fetch('/api/projects', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              payload: {
-                id: currentProject.id,
-                name: currentProject.name,
-                updatedAt: new Date().toISOString(),
-                state: currentProjectState,
-              },
+              name: '프로젝트 1',
             }),
+            signal: controller.signal,
           });
-        } catch {
-          // Ignore: local editing must continue even when API is down.
+
+          if (createResponse.ok) {
+            const createdPayload = (await createResponse.json()) as ApiProjectDetailPayload;
+            const createdProject = createdPayload.project;
+            if (createdProject?.id && createdProject.name && createdProject.updatedAt) {
+              normalizedFetched = [
+                {
+                  id: createdProject.id,
+                  name: createdProject.name,
+                  updatedAt: createdProject.updatedAt,
+                  state: sanitizeProjectState(createdPayload.state),
+                },
+              ];
+            }
+          }
+        }
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        if (normalizedFetched.length === 0) {
+          throw new Error('No projects available from API storage.');
+        }
+
+        const sortedProjects = [...normalizedFetched].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+        const preferredProjectId =
+          sortedProjects.find((project) => project.id === legacyStore.currentProjectId)?.id ?? sortedProjects[0].id;
+        const preferredProject = sortedProjects.find((project) => project.id === preferredProjectId) ?? sortedProjects[0];
+        const preferredCanvasId =
+          preferredProject.state.canvases.find((canvas) => canvas.id === preferredProject.state.currentCanvasId)?.id ??
+          preferredProject.state.canvases[0]?.id ??
+          '';
+
+        loadedProjectIdRef.current = null;
+        setProjects(sortedProjects);
+        setCurrentProjectId(preferredProject.id);
+        setCurrentCanvasId(preferredCanvasId);
+
+        setStatusMessage(`${sortedProjects.length}개 API 프로젝트를 불러왔습니다.`);
+        setErrorMessage('');
+        hydrationSucceeded = true;
+      } catch {
+        setErrorMessage('API 저장소를 불러오지 못했습니다. API 서버 상태를 확인해 주세요.');
+      } finally {
+        apiHydrationCompletedRef.current = hydrationSucceeded;
+      }
+    })();
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!apiHydrationCompletedRef.current || projects.length === 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const syncTargets = projects.map((project) => ({
+          id: project.id,
+          name: project.name,
+          updatedAt: project.id === currentProjectId ? new Date().toISOString() : project.updatedAt,
+          state: cloneProjectDesignState(
+            project.id === currentProjectId && currentProjectState ? currentProjectState : project.state,
+          ),
+        }));
+
+        const results = await Promise.allSettled(
+          syncTargets.map((project) =>
+            fetch('/api/projects/import', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                payload: {
+                  id: project.id,
+                  name: project.name,
+                  updatedAt: project.updatedAt,
+                  state: project.state,
+                },
+              }),
+            }),
+          ),
+        );
+
+        if (results.some((result) => result.status === 'rejected')) {
+          setErrorMessage('일부 프로젝트를 API 저장소로 동기화하지 못했습니다.');
         }
       })();
     }, PROJECT_AUTOSAVE_DELAY_MS);
@@ -3166,7 +3212,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [currentProject, currentProjectState]);
+  }, [currentProjectId, currentProjectState, projects]);
 
   useEffect(() => {
     if (!currentProjectState) {
@@ -3312,22 +3358,6 @@ function App() {
       window.clearTimeout(timer);
     };
   }, [buildAppHistorySnapshot]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    window.localStorage.setItem(LOCAL_PROJECTS_STORAGE_KEY, JSON.stringify(projects));
-  }, [projects]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    window.localStorage.setItem(LOCAL_CURRENT_PROJECT_STORAGE_KEY, currentProjectId);
-  }, [currentProjectId]);
 
   useEffect(() => {
     if (!connectedSaveDirectory || !currentProject) {
