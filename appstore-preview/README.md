@@ -92,10 +92,13 @@ Main endpoints:
   - Full project shape meta for all canvases
 - `POST /api/projects/:projectId/export/zip`
   - Export ZIP with project JSON, per-canvas meta/state, i18n text map, preview PNG
+  - Body options:
+    - `includePngPreview?: boolean` (default `true`)
+    - `includeOriginalMedia?: boolean` (default `false`) to embed original image/video binaries
 
 Notes:
 
-- ZIP export includes media references but does not embed original media binaries.
+- ZIP export embeds original media binaries only when `includeOriginalMedia=true`.
 - API media binaries are stored under `.project-saves/media/<projectId>/<canvasId>/`.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
 - `POST /api/projects/import` for an existing project should include `expectedRevision`.
@@ -161,6 +164,18 @@ curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canva
 curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/phone" \
   -H "Content-Type: application/json" \
   -d '{"x":24,"y":-30,"phoneScale":1.08}'
+
+# export project zip (default: media references only)
+curl -L -X POST "http://localhost:4318/api/projects/<projectId>/export/zip" \
+  -H "Content-Type: application/json" \
+  -d '{"includePngPreview":true}' \
+  -o appstore-preview-export.zip
+
+# export project zip with original media binaries embedded
+curl -L -X POST "http://localhost:4318/api/projects/<projectId>/export/zip" \
+  -H "Content-Type: application/json" \
+  -d '{"includePngPreview":true,"includeOriginalMedia":true}' \
+  -o appstore-preview-export-with-media.zip
 ```
 
 ## What This Project Is

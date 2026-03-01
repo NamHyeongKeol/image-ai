@@ -93,6 +93,7 @@ Common flow:
    - canvas meta: `GET /api/projects/:projectId/canvases/:canvasId/meta`
    - project meta: `GET /api/projects/:projectId/meta`
 12. Export as ZIP: `POST /api/projects/:projectId/export/zip`
+   - options: `includePngPreview` (default `true`), `includeOriginalMedia` (default `false`)
 
 Example requests:
 
@@ -158,6 +159,12 @@ curl -L -X POST http://localhost:4318/api/projects/<projectId>/export/zip \
   -H "Content-Type: application/json" \
   -d '{"includePngPreview":true}' \
   -o appstore-preview-export.zip
+
+# 16) zip export with original media binaries embedded
+curl -L -X POST http://localhost:4318/api/projects/<projectId>/export/zip \
+  -H "Content-Type: application/json" \
+  -d '{"includePngPreview":true,"includeOriginalMedia":true}' \
+  -o appstore-preview-export-with-media.zip
 ```
 
 Notes:
@@ -168,7 +175,7 @@ Notes:
   - `measuredLineCountByDom`, `measuredTextWidthByDom`
 - Text box limits: `width 120..round(canvasWidth*0.93)`, `fontSize 18..160` (API에서 범위 밖 값은 clamp).
 - Shape metadata includes background, phone frame, and all text boxes.
-- ZIP export contains project/canvas JSON + i18n text map + preview PNG (media binaries are referenced, not embedded).
+- ZIP export can include original media binaries when `includeOriginalMedia=true`.
 - API responses now include project `revision` for optimistic concurrency.
 - `POST /api/projects/import` should include `expectedRevision` when updating existing projects.
 - In integrated dev mode (`npm run dev`), GUI projects and API projects are auto-merged/synced.

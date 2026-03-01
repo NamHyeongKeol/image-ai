@@ -7,9 +7,11 @@ import {
   type CanvasMeta,
   type StoredProjectRecord,
 } from './domain.js';
+import { readCanvasMedia } from './media-store.js';
 
 interface ProjectZipOptions {
   includePngPreview?: boolean;
+  includeOriginalMedia?: boolean;
 }
 
 export interface ProjectZipResult {
@@ -17,6 +19,8 @@ export interface ProjectZipResult {
   zipFileName: string;
   warnings: string[];
   canvasCount: number;
+  embeddedMediaCount: number;
+  missingMediaCount: number;
 }
 
 function roundedRectPath(
@@ -149,10 +153,40 @@ function buildI18nTextMap(project: StoredProjectRecord) {
   });
 }
 
+function sanitizeZipFileName(name: string, fallbackName: string) {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return fallbackName;
+  }
+
+  const withoutSlashes = trimmed.replace(/[\\/]+/g, '_');
+  const normalized = Array.from(withoutSlashes)
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join('');
+  return normalized || fallbackName;
+}
+
 export async function buildProjectZip(project: StoredProjectRecord, options?: ProjectZipOptions): Promise<ProjectZipResult> {
   const includePngPreview = options?.includePngPreview ?? true;
+  const includeOriginalMedia = options?.includeOriginalMedia === true;
   const zip = new JSZip();
   const warnings: string[] = [];
+  let embeddedMediaCount = 0;
+  let missingMediaCount = 0;
+  const mediaIndex: Array<{
+    canvasId: string;
+    canvasName: string;
+    mediaKind: 'image' | 'video';
+    mediaName: string;
+    mediaType: string;
+    byteSize: number;
+    embedded: boolean;
+    zipPath: string | null;
+    reason?: string;
+  }> = [];
 
   zip.file(
     'manifest.json',
@@ -162,10 +196,15 @@ export async function buildProjectZip(project: StoredProjectRecord, options?: Pr
         project: {
           id: project.id,
           name: project.name,
+          createdAt: project.createdAt,
           updatedAt: project.updatedAt,
           revision: project.revision,
         },
         canvasCount: project.state.canvases.length,
+        exportOptions: {
+          includePngPreview,
+          includeOriginalMedia,
+        },
       },
       null,
       2,
@@ -178,6 +217,7 @@ export async function buildProjectZip(project: StoredProjectRecord, options?: Pr
       {
         id: project.id,
         name: project.name,
+        createdAt: project.createdAt,
         updatedAt: project.updatedAt,
         revision: project.revision,
         state: project.state,
@@ -222,10 +262,53 @@ export async function buildProjectZip(project: StoredProjectRecord, options?: Pr
     }
 
     if (canvas.state.media.kind) {
-      warnings.push(
-        `${index + 1}. ${canvas.name}: media "${canvas.state.media.name}" is referenced but not embedded in API export.`,
-      );
+      if (!includeOriginalMedia) {
+        warnings.push(
+          `${index + 1}. ${canvas.name}: media "${canvas.state.media.name}" is referenced but not embedded in API export.`,
+        );
+      } else {
+        const media = await readCanvasMedia(project.id, canvas.id);
+        if (!media) {
+          missingMediaCount += 1;
+          warnings.push(
+            `${index + 1}. ${canvas.name}: media "${canvas.state.media.name}" is referenced but original binary was not found in media store.`,
+          );
+          mediaIndex.push({
+            canvasId: canvas.id,
+            canvasName: canvas.name,
+            mediaKind: canvas.state.media.kind,
+            mediaName: canvas.state.media.name,
+            mediaType: '',
+            byteSize: 0,
+            embedded: false,
+            zipPath: null,
+            reason: 'missing_media_binary',
+          });
+        } else {
+          embeddedMediaCount += 1;
+          const fallbackName = `${canvas.id}.${media.meta.kind === 'video' ? 'mp4' : 'png'}`;
+          const binaryFileName = sanitizeZipFileName(media.meta.name, fallbackName);
+          const binaryZipPath = `${canvasDir}/media/${binaryFileName}`;
+          zip.file(binaryZipPath, media.data);
+          zip.file(`${canvasDir}/media/meta.json`, JSON.stringify(media.meta, null, 2));
+
+          mediaIndex.push({
+            canvasId: canvas.id,
+            canvasName: canvas.name,
+            mediaKind: media.meta.kind,
+            mediaName: media.meta.name,
+            mediaType: media.meta.type,
+            byteSize: media.meta.byteSize,
+            embedded: true,
+            zipPath: binaryZipPath,
+          });
+        }
+      }
     }
+  }
+
+  if (includeOriginalMedia) {
+    zip.file('media/index.json', JSON.stringify(mediaIndex, null, 2));
   }
 
   if (warnings.length > 0) {
@@ -240,5 +323,7 @@ export async function buildProjectZip(project: StoredProjectRecord, options?: Pr
     zipFileName,
     warnings,
     canvasCount: project.state.canvases.length,
+    embeddedMediaCount,
+    missingMediaCount,
   };
 }

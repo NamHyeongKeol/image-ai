@@ -751,7 +751,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (request.method === 'POST' && segments.length === 5 && segments[3] === 'export' && segments[4] === 'zip') {
     const body = await readJsonBody(request);
     const includePngPreview = body.includePngPreview !== false;
-    const exported = await buildProjectZip(project, { includePngPreview });
+    const includeOriginalMedia = body.includeOriginalMedia === true;
+    const exported = await buildProjectZip(project, { includePngPreview, includeOriginalMedia });
 
     sendBinary(
       response,
@@ -762,6 +763,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       {
         'X-AppStore-Preview-Warnings': String(exported.warnings.length),
         'X-AppStore-Preview-Canvas-Count': String(exported.canvasCount),
+        'X-AppStore-Preview-Embedded-Media': String(exported.embeddedMediaCount),
+        'X-AppStore-Preview-Missing-Media': String(exported.missingMediaCount),
       },
     );
     return;
