@@ -1371,6 +1371,7 @@ function App() {
   const syncableProjectIdsRef = useRef<Set<string>>(new Set());
   const pendingProjectDetailHydrationRef = useRef<Set<string>>(new Set());
   const lastCanvasPreloadSignatureRef = useRef('');
+  const isMeasuringAllRef = useRef(false);
 
   const [projects, setProjects] = useState<ProjectRecord[]>([initialProject]);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
@@ -1401,6 +1402,7 @@ function App() {
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isExportingProjectZip, setIsExportingProjectZip] = useState(false);
+  const [isMeasuringAll, setIsMeasuringAll] = useState(false);
   const [isUploadDropActive, setIsUploadDropActive] = useState(false);
   const [isCanvasDropActive, setIsCanvasDropActive] = useState(false);
   const [snapGuide, setSnapGuide] = useState({ vertical: false, horizontal: false });
@@ -1413,6 +1415,10 @@ function App() {
   const [statusMessage, setStatusMessage] = useState(
     'iPhone 프레임/텍스트박스를 드래그해 배치하고, 이미지/영상을 DnD 또는 클릭 업로드해 주세요.',
   );
+
+  useEffect(() => {
+    isMeasuringAllRef.current = isMeasuringAll;
+  }, [isMeasuringAll]);
 
   const selectedTextBox = useMemo(
     () => textBoxes.find((box) => box.id === selectedTextBoxId) ?? null,
@@ -3534,12 +3540,15 @@ function App() {
   }, [currentProjectId, markProjectSyncable]);
 
   useEffect(() => {
-    if (!apiHydrationCompletedRef.current || projects.length === 0) {
+    if (!apiHydrationCompletedRef.current || projects.length === 0 || isMeasuringAll) {
       return;
     }
 
     const timer = window.setTimeout(() => {
       void (async () => {
+        if (isMeasuringAllRef.current) {
+          return;
+        }
         const isCurrentProjectDraftReady =
           loadedProjectIdRef.current === currentProjectId && Boolean(currentProjectState);
         const syncableIds = syncableProjectIdsRef.current;
@@ -3683,7 +3692,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [currentProjectId, currentProjectState, projects, removeProjectFromSyncable]);
+  }, [currentProjectId, currentProjectState, isMeasuringAll, projects, removeProjectFromSyncable]);
 
   useEffect(() => {
     if (!currentProjectState) {
@@ -4687,22 +4696,24 @@ function App() {
     }
   }, [assetKind, assetName, exportImage, exportVideo]);
 
-  const [isMeasuringAll, setIsMeasuringAll] = useState(false);
-
   const handleMeasureAll = useCallback(async () => {
     if (!currentProjectId) return;
     const project = projects.find((p) => p.id === currentProjectId);
     if (!project) return;
+    const sourceState =
+      loadedProjectIdRef.current === currentProjectId && currentProjectState ? currentProjectState : project.state;
 
     setIsMeasuringAll(true);
     setStatusMessage('실측 중...');
     setErrorMessage('');
+    isMeasuringAllRef.current = true;
 
     let patchCount = 0;
     let failCount = 0;
     let latestRevision = project.revision;
+    const measuredByCanvas = new Map<string, Map<string, { lineCount: number; textWidth: number }>>();
 
-    for (const canvas of project.state.canvases) {
+    for (const canvas of sourceState.canvases) {
       const updates = canvas.state.textBoxes.map((box) => {
         const { lineCount, textWidth } = measureTextMetrics(box);
         return { id: box.id, measuredLineCount: lineCount, measuredTextWidth: textWidth };
@@ -4710,46 +4721,132 @@ function App() {
 
       if (updates.length === 0) continue;
 
-      try {
-        const res = await fetch(
-          `/api/projects/${encodeURIComponent(currentProjectId)}/canvases/${encodeURIComponent(canvas.id)}/text-boxes`,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ updates }),
-          },
-        );
-        if (res.ok) {
-          patchCount += updates.length;
-          // PATCH 응답에서 최신 revision 읽기
-          const payload = (await res.json().catch(() => null)) as { project?: { revision?: unknown } } | null;
-          const revisionRaw = payload?.project?.revision;
-          if (typeof revisionRaw === 'number' && Number.isFinite(revisionRaw)) {
-            latestRevision = Math.max(0, Math.floor(revisionRaw));
+      let canvasPatched = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const res = await fetch(
+            `/api/projects/${encodeURIComponent(currentProjectId)}/canvases/${encodeURIComponent(canvas.id)}/text-boxes`,
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ updates }),
+            },
+          );
+          if (res.ok) {
+            patchCount += updates.length;
+            const payload = (await res.json().catch(() => null)) as { project?: { revision?: unknown } } | null;
+            const revisionRaw = payload?.project?.revision;
+            if (typeof revisionRaw === 'number' && Number.isFinite(revisionRaw)) {
+              latestRevision = Math.max(0, Math.floor(revisionRaw));
+            }
+            measuredByCanvas.set(
+              canvas.id,
+              new Map(
+                updates.map((update) => [
+                  update.id,
+                  { lineCount: update.measuredLineCount, textWidth: update.measuredTextWidth },
+                ]),
+              ),
+            );
+            canvasPatched = true;
+            break;
           }
-        } else {
-          failCount += updates.length;
+
+          const shouldRetryConflict = res.status === 409 && attempt < 2;
           await res.body?.cancel().catch(() => null);
+          if (shouldRetryConflict) {
+            await new Promise((resolve) => window.setTimeout(resolve, 120 * (attempt + 1)));
+            continue;
+          }
+          break;
+        } catch {
+          if (attempt < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 120 * (attempt + 1)));
+            continue;
+          }
+          break;
         }
-      } catch {
+      }
+
+      if (!canvasPatched) {
         failCount += updates.length;
       }
     }
 
-    // 로컬 projects state의 revision을 최신값으로 갱신 → 백그라운드 sync 409 방지
-    if (latestRevision > project.revision) {
+    if (patchCount > 0) {
+      const now = new Date().toISOString();
+      markProjectSyncable(currentProjectId);
       setProjects((prev) =>
-        prev.map((p) => (p.id === currentProjectId ? { ...p, revision: latestRevision } : p)),
+        prev.map((p) => {
+          if (p.id !== currentProjectId) {
+            return p;
+          }
+
+          return {
+            ...p,
+            updatedAt: now,
+            revision: Math.max(p.revision, latestRevision),
+            state: {
+              ...p.state,
+              canvases: p.state.canvases.map((canvas) => {
+                const measuredByTextBoxId = measuredByCanvas.get(canvas.id);
+                if (!measuredByTextBoxId) {
+                  return canvas;
+                }
+
+                return {
+                  ...canvas,
+                  state: {
+                    ...canvas.state,
+                    textBoxes: canvas.state.textBoxes.map((box) => {
+                      const measured = measuredByTextBoxId.get(box.id);
+                      if (!measured) {
+                        return box;
+                      }
+
+                      return {
+                        ...box,
+                        measuredLineCount: measured.lineCount,
+                        measuredTextWidth: measured.textWidth,
+                      };
+                    }),
+                  },
+                };
+              }),
+            },
+          };
+        }),
       );
+
+      const measuredCurrentCanvas = measuredByCanvas.get(currentCanvasId);
+      if (measuredCurrentCanvas) {
+        setTextBoxes((previous) =>
+          previous.map((box) => {
+            const measured = measuredCurrentCanvas.get(box.id);
+            if (!measured) {
+              return box;
+            }
+
+            return {
+              ...box,
+              measuredLineCount: measured.lineCount,
+              measuredTextWidth: measured.textWidth,
+            };
+          }),
+        );
+      }
     }
 
     setIsMeasuringAll(false);
+    isMeasuringAllRef.current = false;
     if (failCount === 0) {
       setStatusMessage(`${patchCount}개 텍스트박스 실측 완료.`);
+      setErrorMessage('');
     } else {
       setStatusMessage(`실측 완료: ${patchCount}개 성공, ${failCount}개 실패.`);
+      setErrorMessage('일부 캔버스 실측 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.');
     }
-  }, [currentProjectId, projects]);
+  }, [currentCanvasId, currentProjectId, currentProjectState, markProjectSyncable, projects]);
 
   const handleExportProjectZip = useCallback(async () => {
     if (!currentProject || !currentProjectState) {
