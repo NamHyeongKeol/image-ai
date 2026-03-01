@@ -807,6 +807,30 @@ function centerCanvasElements(state: CanvasDesignState): CanvasDesignState {
   };
 }
 
+function computeSingleLineMinWidthByCanvas(box: Pick<TextBoxModel, 'text' | 'fontSize' | 'fontKey'>): number {
+  if (typeof document === 'undefined') {
+    return TEXT_BOX_MIN_WIDTH;
+  }
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return TEXT_BOX_MIN_WIDTH;
+  }
+
+  const fontFamily = getFontFamily(box.fontKey);
+  const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
+  // Newline is an explicit line break, so we replace it with a space for "single-line fit" width.
+  const textForSingleLine = box.text.replace(/\r\n/g, '\n').split('\n').join(' ');
+  if (!textForSingleLine.length) {
+    return TEXT_BOX_MIN_WIDTH;
+  }
+
+  ctx.font = `800 ${fontSize}px ${fontFamily}`;
+  const measured = ctx.measureText(textForSingleLine).width;
+  return clamp(Math.ceil(measured + 1), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+}
+
 type DomTextMeasureContext = {
   host: HTMLDivElement;
   textNode: Text;
@@ -4708,6 +4732,121 @@ function App() {
     setErrorMessage('');
   }, [currentCanvasId, currentProjectId, currentProjectState, markProjectSyncable, projects]);
 
+  const shrinkCanvasTextBoxesToSingleLine = useCallback((state: CanvasDesignState): CanvasDesignState => {
+    return {
+      ...state,
+      textBoxes: state.textBoxes.map((box) => {
+        const nextWidth = computeSingleLineMinWidthByCanvas(box);
+        const nextBox = nextWidth === box.width ? box : { ...box, width: nextWidth };
+        const measured = measureTextMetrics(nextBox);
+        return {
+          ...nextBox,
+          measuredLineCountByCanvas: measured.lineCountByCanvas,
+          measuredLineCountByDom: measured.lineCountByDom,
+          measuredTextWidthByCanvas: measured.textWidthByCanvas,
+          measuredTextWidthByDom: measured.textWidthByDom,
+        };
+      }),
+    };
+  }, []);
+
+  const handleShrinkCurrentCanvasTextWidths = useCallback(() => {
+    const nextState = shrinkCanvasTextBoxesToSingleLine(currentCanvasState);
+    setTextBoxes(nextState.textBoxes.map((box) => ({ ...box })));
+    setStatusMessage('현재 캔버스의 모든 텍스트박스를 한 줄 최소 너비로 조정했습니다.');
+    setErrorMessage('');
+  }, [currentCanvasState, shrinkCanvasTextBoxesToSingleLine]);
+
+  const handleShrinkCurrentProjectTextWidths = useCallback(() => {
+    if (!currentProject || !currentProjectState) {
+      return;
+    }
+
+    const nextCanvases = currentProjectState.canvases.map((canvas) => ({
+      ...canvas,
+      state: shrinkCanvasTextBoxesToSingleLine(canvas.state),
+    }));
+
+    const nextProject: ProjectRecord = {
+      ...currentProject,
+      updatedAt: new Date().toISOString(),
+      state: {
+        ...currentProjectState,
+        canvases: nextCanvases,
+      },
+    };
+
+    markProjectSyncable(currentProject.id);
+    setProjects((previous) =>
+      previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+    );
+
+    const nextCurrentCanvasState = nextCanvases.find((canvas) => canvas.id === currentCanvasId)?.state;
+    if (nextCurrentCanvasState) {
+      setTextBoxes(nextCurrentCanvasState.textBoxes.map((box) => ({ ...box })));
+    }
+
+    setStatusMessage(`현재 프로젝트의 ${nextCanvases.length}개 캔버스 텍스트박스를 한 줄 최소 너비로 조정했습니다.`);
+    setErrorMessage('');
+  }, [
+    currentCanvasId,
+    currentProject,
+    currentProjectState,
+    markProjectSyncable,
+    shrinkCanvasTextBoxesToSingleLine,
+  ]);
+
+  const handleShrinkAllProjectsTextWidths = useCallback(() => {
+    if (projects.length === 0) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const isCurrentProjectDraftReady =
+      loadedProjectIdRef.current === currentProjectId && Boolean(currentProjectState);
+
+    const nextProjects = projects.map((project) => {
+      const sourceState =
+        project.id === currentProjectId && isCurrentProjectDraftReady && currentProjectState
+          ? currentProjectState
+          : project.state;
+
+      return {
+        ...project,
+        updatedAt: now,
+        state: {
+          ...sourceState,
+          canvases: sourceState.canvases.map((canvas) => ({
+            ...canvas,
+            state: shrinkCanvasTextBoxesToSingleLine(canvas.state),
+          })),
+        },
+      };
+    });
+
+    for (const project of nextProjects) {
+      markProjectSyncable(project.id);
+    }
+    setProjects(nextProjects);
+
+    const nextCurrentCanvasState = nextProjects
+      .find((project) => project.id === currentProjectId)
+      ?.state.canvases.find((canvas) => canvas.id === currentCanvasId)?.state;
+    if (nextCurrentCanvasState) {
+      setTextBoxes(nextCurrentCanvasState.textBoxes.map((box) => ({ ...box })));
+    }
+
+    setStatusMessage(`${nextProjects.length}개 프로젝트 전체 캔버스 텍스트박스를 한 줄 최소 너비로 조정했습니다.`);
+    setErrorMessage('');
+  }, [
+    currentCanvasId,
+    currentProjectId,
+    currentProjectState,
+    markProjectSyncable,
+    projects,
+    shrinkCanvasTextBoxesToSingleLine,
+  ]);
+
   const readCanvasMediaRecordForExport = useCallback(
     async (projectId: string, canvasId: string, canvasIndex: number, state: CanvasDesignState) => {
       const mediaKey = buildProjectCanvasMediaKey(projectId, canvasId);
@@ -5356,6 +5495,25 @@ function App() {
         disabled={projects.length === 0}
       >
         모든 프로젝트 전체 가운데 정렬
+      </Button>
+      <Button type="button" variant="outline" onClick={handleShrinkCurrentCanvasTextWidths}>
+        현재 캔버스 텍스트 최소 너비
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={handleShrinkCurrentProjectTextWidths}
+        disabled={!currentProjectId || !currentProjectState}
+      >
+        현재 프로젝트 텍스트 최소 너비
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={handleShrinkAllProjectsTextWidths}
+        disabled={projects.length === 0}
+      >
+        모든 프로젝트 텍스트 최소 너비
       </Button>
       <Button type="button" variant="outline" onClick={handleUndo} disabled={!canUndo}>
         <Undo2 className="h-4 w-4" />
