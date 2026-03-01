@@ -1370,7 +1370,6 @@ function App() {
   const copiedTextBoxRef = useRef<TextBoxModel | null>(null);
   const historyEntryRef = useRef<AppHistoryEntry>({ past: [], present: null, future: [] });
   const isApplyingHistoryRef = useRef(false);
-  const apiHydrationAttemptedRef = useRef(false);
   const apiHydrationCompletedRef = useRef(false);
   const lastCanvasPreloadSignatureRef = useRef('');
 
@@ -3035,11 +3034,6 @@ function App() {
   }, [canvasThumbnailPreloadSignature, currentProject]);
 
   useEffect(() => {
-    if (apiHydrationAttemptedRef.current) {
-      return;
-    }
-    apiHydrationAttemptedRef.current = true;
-
     const controller = new AbortController();
 
     void (async () => {
@@ -3211,7 +3205,13 @@ function App() {
         setStatusMessage(`${mergedProjects.length}개 API 프로젝트를 불러왔습니다.`);
         setErrorMessage('');
         hydrationSucceeded = true;
-      } catch {
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          (error instanceof DOMException && error.name === 'AbortError')
+        ) {
+          return;
+        }
         setErrorMessage('API 저장소를 불러오지 못했습니다. API 서버 상태를 확인해 주세요.');
       } finally {
         apiHydrationCompletedRef.current = hydrationSucceeded;
