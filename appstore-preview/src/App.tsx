@@ -1472,6 +1472,11 @@ function App() {
       return null;
     }
 
+    // Prevent stale global draft state from overwriting freshly switched/hydrating project state.
+    if (loadedProjectIdRef.current !== currentProjectId) {
+      return cloneProjectDesignState(currentProject.state);
+    }
+
     const exists = currentProject.state.canvases.some((canvas) => canvas.id === currentCanvasId);
     const targetCanvasId = exists ? currentCanvasId : currentProject.state.currentCanvasId;
     const canvases = currentProject.state.canvases.map((canvas) =>
@@ -1487,7 +1492,7 @@ function App() {
       canvases,
       currentCanvasId: targetCanvasId,
     };
-  }, [currentCanvasId, currentCanvasState, currentProject]);
+  }, [currentCanvasId, currentCanvasState, currentProject, currentProjectId]);
 
   const currentProjectCanvases = useMemo(() => currentProjectState?.canvases ?? [], [currentProjectState]);
 
@@ -1532,11 +1537,16 @@ function App() {
   }, [currentCanvasId, currentProjectId]);
 
   const buildAppHistorySnapshot = useCallback<() => AppHistorySnapshot>(() => {
+    const isCurrentProjectDraftReady =
+      loadedProjectIdRef.current === currentProjectId && Boolean(currentProjectState);
+
     const syncedProjects: AppHistoryProjectSnapshot[] = projects.map((project) => ({
       id: project.id,
       name: project.name,
       state: cloneProjectDesignState(
-        project.id === currentProjectId && currentProjectState ? currentProjectState : project.state,
+        project.id === currentProjectId && isCurrentProjectDraftReady && currentProjectState
+          ? currentProjectState
+          : project.state,
       ),
     }));
 
@@ -3457,6 +3467,8 @@ function App() {
 
     const timer = window.setTimeout(() => {
       void (async () => {
+        const isCurrentProjectDraftReady =
+          loadedProjectIdRef.current === currentProjectId && Boolean(currentProjectState);
         const syncableIds = syncableProjectIdsRef.current;
         const syncTargets = projects
           .filter((project) => syncableIds.has(project.id))
@@ -3465,7 +3477,9 @@ function App() {
             name: project.name,
             updatedAt: project.id === currentProjectId ? new Date().toISOString() : project.updatedAt,
             state: cloneProjectDesignState(
-              project.id === currentProjectId && currentProjectState ? currentProjectState : project.state,
+              project.id === currentProjectId && isCurrentProjectDraftReady && currentProjectState
+                ? currentProjectState
+                : project.state,
             ),
           }));
         if (syncTargets.length === 0) {
@@ -3541,6 +3555,10 @@ function App() {
 
   useEffect(() => {
     if (!currentProjectState) {
+      return;
+    }
+
+    if (loadedProjectIdRef.current !== currentProjectId) {
       return;
     }
 
