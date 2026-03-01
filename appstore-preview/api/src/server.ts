@@ -83,6 +83,60 @@ function toProjectSummary(project: StoredProjectRecord) {
   };
 }
 
+function parseBooleanQuery(url: URL, key: string, defaultValue: boolean) {
+  const raw = url.searchParams.get(key);
+  if (!raw) {
+    return defaultValue;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+
+  return defaultValue;
+}
+
+async function readProjectRawFile(project: StoredProjectRecord) {
+  try {
+    const raw = await readFile(project.sourcePath, 'utf8');
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function buildProjectReadPayload(
+  project: StoredProjectRecord,
+  options?: { includeMeta?: boolean; includeRawFile?: boolean },
+) {
+  const includeMeta = options?.includeMeta ?? true;
+  const includeRawFile = options?.includeRawFile ?? true;
+
+  const summary = toProjectSummary(project);
+  const payload: JsonObject = {
+    project: {
+      ...summary,
+      sourcePath: project.sourcePath,
+    },
+    state: project.state,
+  };
+
+  if (includeMeta) {
+    payload.metas = project.state.canvases.map((canvas) => computeCanvasMeta(canvas));
+  }
+
+  if (includeRawFile) {
+    payload.rawFile = await readProjectRawFile(project);
+  }
+
+  return payload;
+}
+
 function ensureJsonObject(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -218,6 +272,22 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     notFound();
   }
 
+  if (request.method === 'GET' && segments.length === 3 && segments[2] === 'full') {
+    const includeMeta = parseBooleanQuery(url, 'includeMeta', true);
+    const includeRawFile = parseBooleanQuery(url, 'includeRawFile', true);
+    const projects = await listProjects();
+    const fullProjects = await Promise.all(
+      projects.map((project) => buildProjectReadPayload(project, { includeMeta, includeRawFile })),
+    );
+
+    sendJson(response, 200, {
+      projects: fullProjects,
+      total: fullProjects.length,
+      options: { includeMeta, includeRawFile },
+    });
+    return;
+  }
+
   if (request.method === 'GET' && segments.length === 2) {
     const projects = await listProjects();
     sendJson(response, 200, {
@@ -273,6 +343,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
   const projectId = getParam(segments, 2, 'projectId');
   const project = await getProjectOrThrow(projectId);
+
+  if (request.method === 'GET' && segments.length === 4 && segments[3] === 'full') {
+    const includeMeta = parseBooleanQuery(url, 'includeMeta', true);
+    const includeRawFile = parseBooleanQuery(url, 'includeRawFile', true);
+    const fullProject = await buildProjectReadPayload(project, { includeMeta, includeRawFile });
+    sendJson(response, 200, {
+      ...fullProject,
+      options: { includeMeta, includeRawFile },
+    });
+    return;
+  }
 
   if (request.method === 'GET' && segments.length === 3) {
     sendJson(response, 200, {

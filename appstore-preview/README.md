@@ -37,8 +37,14 @@ npm run api:dev
 Main endpoints:
 - `GET /api/projects`
   - List all projects visible to the API (`.project-saves/*.appstore-preview-project.json`)
+- `GET /api/projects/:projectId`
+  - Read one project (`project` summary + `state`)
+- `GET /api/projects/full`
+  - Full read dump for all local projects (`state` + `metas` + `rawFile`)
 - `POST /api/projects/:projectId/clone`
   - Clone an existing project
+- `GET /api/projects/:projectId/full`
+  - Full read dump for one project (`state` + `metas` + `rawFile`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
   - Update one text box (`text`, `width`, `fontSize`, `fontKey`, `color`, `x`, `y`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
@@ -56,6 +62,25 @@ Notes:
 - ZIP export includes media references but does not embed original media binaries.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
 - When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs the active GUI project back to API.
+- For `full` read endpoints, query params are supported:
+  - `includeMeta=true|false` (default: `true`)
+  - `includeRawFile=true|false` (default: `true`)
+
+Quick read examples:
+
+```bash
+# list summaries
+curl -s http://localhost:4318/api/projects
+
+# read one project state
+curl -s http://localhost:4318/api/projects/<projectId>
+
+# read full dump for all projects (with meta + raw file)
+curl -s "http://localhost:4318/api/projects/full?includeMeta=true&includeRawFile=true"
+
+# read full dump for one project (skip raw file if not needed)
+curl -s "http://localhost:4318/api/projects/<projectId>/full?includeMeta=true&includeRawFile=false"
+```
 
 ## What This Project Is
 
