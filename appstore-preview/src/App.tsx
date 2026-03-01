@@ -752,6 +752,42 @@ async function removeProjectMediaRecord(projectId: string) {
   db.close();
 }
 
+async function findProjectMediaRecordByKindAndName(kind: Exclude<MediaKind, null>, name: string) {
+  const db = await openProjectMediaDb();
+  const result = await new Promise<ProjectMediaRecord | null>((resolve, reject) => {
+    const tx = db.transaction(PROJECT_MEDIA_STORE_NAME, 'readonly');
+    const store = tx.objectStore(PROJECT_MEDIA_STORE_NAME);
+    const request = store.openCursor();
+    let matched: ProjectMediaRecord | null = null;
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve(matched);
+        return;
+      }
+
+      const value = cursor.value as ProjectMediaRecord | undefined;
+      if (value && value.kind === kind && value.name === name) {
+        if (!matched) {
+          matched = value;
+        } else {
+          const previousTs = Date.parse(matched.updatedAt);
+          const nextTs = Date.parse(value.updatedAt);
+          if ((Number.isNaN(previousTs) && !Number.isNaN(nextTs)) || nextTs > previousTs) {
+            matched = value;
+          }
+        }
+      }
+
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error ?? new Error('미디어 검색에 실패했습니다.'));
+  });
+  db.close();
+  return result;
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -1748,6 +1784,22 @@ function App() {
               projectId: mediaKey,
               updatedAt: new Date().toISOString(),
             }).catch(() => undefined);
+          }
+        }
+        if (!record && targetCanvas.state.media.kind && targetCanvas.state.media.name) {
+          const matchedRecord = await findProjectMediaRecordByKindAndName(
+            targetCanvas.state.media.kind,
+            targetCanvas.state.media.name,
+          );
+          if (matchedRecord) {
+            record = matchedRecord;
+            if (matchedRecord.projectId !== mediaKey) {
+              void saveProjectMediaRecord({
+                ...matchedRecord,
+                projectId: mediaKey,
+                updatedAt: new Date().toISOString(),
+              }).catch(() => undefined);
+            }
           }
         }
 
@@ -2941,6 +2993,16 @@ function App() {
             if (!mediaRecord && canvas.id === firstCanvasId) {
               mediaRecord = await readProjectMediaRecord(targetProjectId);
             }
+            if (!mediaRecord && canvas.state.media.name) {
+              mediaRecord = await findProjectMediaRecordByKindAndName(canvas.state.media.kind, canvas.state.media.name);
+              if (mediaRecord && mediaRecord.projectId !== mediaKey) {
+                void saveProjectMediaRecord({
+                  ...mediaRecord,
+                  projectId: mediaKey,
+                  updatedAt: new Date().toISOString(),
+                }).catch(() => undefined);
+              }
+            }
 
             if (mediaRecord) {
               objectUrl = URL.createObjectURL(mediaRecord.blob);
@@ -4038,14 +4100,27 @@ function App() {
     setErrorMessage('');
   }, []);
 
-  const readCanvasMediaRecordForExport = useCallback(async (projectId: string, canvasId: string, canvasIndex: number) => {
-    const mediaKey = buildProjectCanvasMediaKey(projectId, canvasId);
-    let record = await readProjectMediaRecord(mediaKey);
-    if (!record && canvasIndex === 0) {
-      record = await readProjectMediaRecord(projectId);
-    }
-    return record;
-  }, []);
+  const readCanvasMediaRecordForExport = useCallback(
+    async (projectId: string, canvasId: string, canvasIndex: number, state: CanvasDesignState) => {
+      const mediaKey = buildProjectCanvasMediaKey(projectId, canvasId);
+      let record = await readProjectMediaRecord(mediaKey);
+      if (!record && canvasIndex === 0) {
+        record = await readProjectMediaRecord(projectId);
+      }
+      if (!record && state.media.kind && state.media.name) {
+        record = await findProjectMediaRecordByKindAndName(state.media.kind, state.media.name);
+        if (record && record.projectId !== mediaKey) {
+          void saveProjectMediaRecord({
+            ...record,
+            projectId: mediaKey,
+            updatedAt: new Date().toISOString(),
+          }).catch(() => undefined);
+        }
+      }
+      return record;
+    },
+    [],
+  );
 
   const renderCanvasImageArtifact = useCallback(
     async (state: CanvasDesignState, media: HTMLImageElement | HTMLVideoElement | null): Promise<CanvasExportArtifact> => {
@@ -4283,7 +4358,7 @@ function App() {
             if (canUseCurrentLoadedVideo) {
               sourceUrl = assetUrl;
             } else {
-              const mediaRecord = await readCanvasMediaRecordForExport(currentProject.id, canvas.id, index);
+              const mediaRecord = await readCanvasMediaRecordForExport(currentProject.id, canvas.id, index, state);
               if (mediaRecord) {
                 sourceUrl = URL.createObjectURL(mediaRecord.blob);
               }
@@ -4317,7 +4392,7 @@ function App() {
             if (canUseCurrentLoadedImage) {
               media = imageRef.current;
             } else {
-              const mediaRecord = await readCanvasMediaRecordForExport(currentProject.id, canvas.id, index);
+              const mediaRecord = await readCanvasMediaRecordForExport(currentProject.id, canvas.id, index, state);
               if (!mediaRecord) {
                 warnings.push(`${index + 1}번 캔버스(${canvas.name}): 이미지 미디어를 찾지 못해 빈 화면으로 내보냅니다.`);
               } else {
