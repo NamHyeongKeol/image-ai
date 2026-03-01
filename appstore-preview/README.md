@@ -69,6 +69,7 @@ Notes:
 - For `full` read endpoints, query params are supported:
   - `includeMeta=true|false` (default: `true`)
   - `includeRawFile=true|false` (default: `true`)
+  - `includeThumbnails=true|false` (default: `true`)
 
 Quick read examples:
 

@@ -144,6 +144,7 @@ Notes:
 - Full read endpoints support:
   - `includeMeta=true|false` (default: `true`)
   - `includeRawFile=true|false` (default: `true`)
+  - `includeThumbnails=true|false` (default: `true`)
 
 ### 2. `mosaic-ai/` (Next.js)
 

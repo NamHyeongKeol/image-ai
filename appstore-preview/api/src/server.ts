@@ -113,10 +113,21 @@ async function readProjectRawFile(project: StoredProjectRecord) {
 
 async function buildProjectReadPayload(
   project: StoredProjectRecord,
-  options?: { includeMeta?: boolean; includeRawFile?: boolean },
+  options?: { includeMeta?: boolean; includeRawFile?: boolean; includeThumbnails?: boolean },
 ) {
   const includeMeta = options?.includeMeta ?? true;
   const includeRawFile = options?.includeRawFile ?? true;
+  const includeThumbnails = options?.includeThumbnails ?? true;
+  const baseState = cloneProjectDesignState(project.state);
+  const state = includeThumbnails
+    ? baseState
+    : {
+        ...baseState,
+        canvases: baseState.canvases.map((canvas) => ({
+          ...canvas,
+          thumbnailDataUrl: undefined,
+        })),
+      };
 
   const summary = toProjectSummary(project);
   const payload: JsonObject = {
@@ -124,7 +135,7 @@ async function buildProjectReadPayload(
       ...summary,
       sourcePath: project.sourcePath,
     },
-    state: project.state,
+    state,
   };
 
   if (includeMeta) {
@@ -276,15 +287,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (request.method === 'GET' && segments.length === 3 && segments[2] === 'full') {
     const includeMeta = parseBooleanQuery(url, 'includeMeta', true);
     const includeRawFile = parseBooleanQuery(url, 'includeRawFile', true);
+    const includeThumbnails = parseBooleanQuery(url, 'includeThumbnails', true);
     const projects = await listProjects();
     const fullProjects = await Promise.all(
-      projects.map((project) => buildProjectReadPayload(project, { includeMeta, includeRawFile })),
+      projects.map((project) => buildProjectReadPayload(project, { includeMeta, includeRawFile, includeThumbnails })),
     );
 
     sendJson(response, 200, {
       projects: fullProjects,
       total: fullProjects.length,
-      options: { includeMeta, includeRawFile },
+      options: { includeMeta, includeRawFile, includeThumbnails },
     });
     return;
   }
@@ -359,18 +371,31 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (request.method === 'GET' && segments.length === 4 && segments[3] === 'full') {
     const includeMeta = parseBooleanQuery(url, 'includeMeta', true);
     const includeRawFile = parseBooleanQuery(url, 'includeRawFile', true);
-    const fullProject = await buildProjectReadPayload(project, { includeMeta, includeRawFile });
+    const includeThumbnails = parseBooleanQuery(url, 'includeThumbnails', true);
+    const fullProject = await buildProjectReadPayload(project, { includeMeta, includeRawFile, includeThumbnails });
     sendJson(response, 200, {
       ...fullProject,
-      options: { includeMeta, includeRawFile },
+      options: { includeMeta, includeRawFile, includeThumbnails },
     });
     return;
   }
 
   if (request.method === 'GET' && segments.length === 3) {
+    const includeThumbnails = parseBooleanQuery(url, 'includeThumbnails', true);
+    const baseState = cloneProjectDesignState(project.state);
+    const state = includeThumbnails
+      ? baseState
+      : {
+          ...baseState,
+          canvases: baseState.canvases.map((canvas) => ({
+            ...canvas,
+            thumbnailDataUrl: undefined,
+          })),
+        };
     sendJson(response, 200, {
       project: toProjectSummary(project),
-      state: project.state,
+      state,
+      options: { includeThumbnails },
     });
     return;
   }

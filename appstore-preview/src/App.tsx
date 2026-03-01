@@ -3086,7 +3086,7 @@ function App() {
         }
 
         let normalizedFetched: ProjectRecord[] = [];
-        const fullResponse = await fetch('/api/projects/full?includeMeta=false&includeRawFile=false', {
+        const fullResponse = await fetch('/api/projects/full?includeMeta=false&includeRawFile=false&includeThumbnails=false', {
           signal: controller.signal,
         });
         if (fullResponse.ok) {
@@ -3122,9 +3122,12 @@ function App() {
           const fetchedProjects = await Promise.all(
             summaries.map(async (summary) => {
               try {
-                const detailResponse = await fetch(`/api/projects/${encodeURIComponent(summary.id)}`, {
+                const detailResponse = await fetch(
+                  `/api/projects/${encodeURIComponent(summary.id)}?includeThumbnails=false`,
+                  {
                   signal: controller.signal,
-                });
+                  },
+                );
                 if (!detailResponse.ok) {
                   return null;
                 }
