@@ -76,6 +76,7 @@ interface TextBoxModel {
   fontKey: FontKey;
   fontSize: number;
   color: string;
+  measuredLineCount?: number | null;
 }
 
 interface TextBoxLayout {
@@ -778,6 +779,29 @@ function measureTextBoxBounds(box: TextBoxModel): Rect {
     width,
     height,
   };
+}
+
+function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+  lineCount: number;
+  textWidth: number;
+} {
+  if (typeof document === 'undefined') {
+    return { lineCount: 1, textWidth: 0 };
+  }
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return { lineCount: 1, textWidth: 0 };
+  }
+
+  const fontFamily = getFontFamily(box.fontKey);
+  const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  ctx.font = `800 ${fontSize}px ${fontFamily}`;
+  const lines = wrapTextToLines(ctx, box.text, width);
+  const textWidth = lines.reduce((max, line) => Math.max(max, ctx.measureText(line).width), 0);
+  return { lineCount: lines.length, textWidth };
 }
 
 function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -2530,7 +2554,19 @@ function App() {
 
   const updateSelectedTextBox = useCallback((updater: (box: TextBoxModel) => TextBoxModel) => {
     setTextBoxes((previous) =>
-      previous.map((box) => (box.id === selectedTextBoxId ? updater(box) : box)),
+      previous.map((box) => {
+        if (box.id !== selectedTextBoxId) return box;
+        const next = updater(box);
+        // text/width/fontSize 변경 시 브라우저 canvas로 즉시 실측
+        const contentChanged =
+          next.text !== box.text ||
+          next.width !== box.width ||
+          next.fontSize !== box.fontSize ||
+          next.fontKey !== box.fontKey;
+        if (!contentChanged) return next;
+        const { lineCount, textWidth } = measureTextMetrics(next);
+        return { ...next, measuredLineCount: lineCount, measuredTextWidth: textWidth };
+      }),
     );
   }, [selectedTextBoxId]);
 
@@ -4211,14 +4247,12 @@ function App() {
         if (session.target === 'text-box-resize' && session.textBoxId && session.startTextBoxSize) {
           const nextWidth = clamp(session.startTextBoxSize.width + dx, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
           setTextBoxes((previous) =>
-            previous.map((box) =>
-              box.id === session.textBoxId
-                ? {
-                    ...box,
-                    width: nextWidth,
-                  }
-                : box,
-            ),
+            previous.map((box) => {
+              if (box.id !== session.textBoxId) return box;
+              const next = { ...box, width: nextWidth };
+              const { lineCount, textWidth } = measureTextMetrics(next);
+              return { ...next, measuredLineCount: lineCount, measuredTextWidth: textWidth };
+            }),
           );
           event.currentTarget.style.cursor = 'nwse-resize';
           return;
@@ -4652,6 +4686,70 @@ function App() {
       setIsExporting(false);
     }
   }, [assetKind, assetName, exportImage, exportVideo]);
+
+  const [isMeasuringAll, setIsMeasuringAll] = useState(false);
+
+  const handleMeasureAll = useCallback(async () => {
+    if (!currentProjectId) return;
+    const project = projects.find((p) => p.id === currentProjectId);
+    if (!project) return;
+
+    setIsMeasuringAll(true);
+    setStatusMessage('실측 중...');
+    setErrorMessage('');
+
+    let patchCount = 0;
+    let failCount = 0;
+    let latestRevision = project.revision;
+
+    for (const canvas of project.state.canvases) {
+      const updates = canvas.state.textBoxes.map((box) => {
+        const { lineCount, textWidth } = measureTextMetrics(box);
+        return { id: box.id, measuredLineCount: lineCount, measuredTextWidth: textWidth };
+      });
+
+      if (updates.length === 0) continue;
+
+      try {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(currentProjectId)}/canvases/${encodeURIComponent(canvas.id)}/text-boxes`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ updates }),
+          },
+        );
+        if (res.ok) {
+          patchCount += updates.length;
+          // PATCH 응답에서 최신 revision 읽기
+          const payload = (await res.json().catch(() => null)) as { project?: { revision?: unknown } } | null;
+          const revisionRaw = payload?.project?.revision;
+          if (typeof revisionRaw === 'number' && Number.isFinite(revisionRaw)) {
+            latestRevision = Math.max(0, Math.floor(revisionRaw));
+          }
+        } else {
+          failCount += updates.length;
+          await res.body?.cancel().catch(() => null);
+        }
+      } catch {
+        failCount += updates.length;
+      }
+    }
+
+    // 로컬 projects state의 revision을 최신값으로 갱신 → 백그라운드 sync 409 방지
+    if (latestRevision > project.revision) {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === currentProjectId ? { ...p, revision: latestRevision } : p)),
+      );
+    }
+
+    setIsMeasuringAll(false);
+    if (failCount === 0) {
+      setStatusMessage(`${patchCount}개 텍스트박스 실측 완료.`);
+    } else {
+      setStatusMessage(`실측 완료: ${patchCount}개 성공, ${failCount}개 실패.`);
+    }
+  }, [currentProjectId, projects]);
 
   const handleExportProjectZip = useCallback(async () => {
     if (!currentProject || !currentProjectState) {
@@ -5320,6 +5418,14 @@ function App() {
                 <Button type="button" variant="outline" onClick={handleRedo} disabled={!canRedo}>
                   <Redo2 className="h-4 w-4" />
                   다시실행
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleMeasureAll}
+                  disabled={isMeasuringAll || !currentProjectId}
+                >
+                  {isMeasuringAll ? '실측 중...' : '전체 캔버스 줄 수 실측'}
                 </Button>
                 <Button
                   type="button"

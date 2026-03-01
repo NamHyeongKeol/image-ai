@@ -31,6 +31,8 @@ export interface TextBoxModel {
   fontKey: FontKey;
   fontSize: number;
   color: string;
+  measuredLineCount?: number | null;
+  measuredTextWidth?: number | null;
 }
 
 export interface CanvasDesignState {
@@ -252,6 +254,14 @@ export function sanitizeCanvasState(state: unknown): CanvasDesignState {
             fontKey: isFontKey(box.fontKey) ? box.fontKey : FONT_OPTIONS[0].key,
             fontSize: clamp(safeNumber(box.fontSize, 48), TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
             color: safeString(box.color, '#1f3b7c'),
+            measuredLineCount:
+              typeof box.measuredLineCount === 'number' && Number.isFinite(box.measuredLineCount)
+                ? Math.max(1, Math.floor(box.measuredLineCount))
+                : null,
+            measuredTextWidth:
+              typeof box.measuredTextWidth === 'number' && Number.isFinite(box.measuredTextWidth)
+                ? Math.max(0, box.measuredTextWidth)
+                : null,
           }))
       : [],
     media: {

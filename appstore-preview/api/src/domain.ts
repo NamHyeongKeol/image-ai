@@ -110,6 +110,8 @@ export interface TextBoxMeta {
   lineClassification: "single-line" | "two-lines" | "three-or-more-lines";
   hasManualLineBreak: boolean;
   wrappedByWidth: boolean;
+  measuredLineCount: number | null;
+  measuredTextWidth: number | null;
   font: {
     key: FontKey;
     family: string;
@@ -384,6 +386,14 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
     lineClassification,
     hasManualLineBreak,
     wrappedByWidth,
+    measuredLineCount:
+      typeof box.measuredLineCount === 'number' && Number.isFinite(box.measuredLineCount)
+        ? Math.max(1, Math.floor(box.measuredLineCount))
+        : null,
+    measuredTextWidth:
+      typeof box.measuredTextWidth === 'number' && Number.isFinite(box.measuredTextWidth)
+        ? Math.max(0, box.measuredTextWidth)
+        : null,
     font: {
       key: box.fontKey,
       family: fontFamily,
@@ -533,6 +543,32 @@ export function patchTextBox(
         : box.fontSize,
     fontKey: isFontKey(patch.fontKey) ? patch.fontKey : box.fontKey,
     color: typeof patch.color === "string" ? patch.color : box.color,
+    measuredLineCount: (() => {
+      // 측정값을 직접 설정하는 경우
+      if ('measuredLineCount' in patch) {
+        const v = patch.measuredLineCount;
+        if (v === null || v === undefined) return null;
+        return typeof v === 'number' && Number.isFinite(v) ? Math.max(1, Math.floor(v)) : box.measuredLineCount ?? null;
+      }
+      // 텍스트/width/fontSize가 바뀌면 기존 실측값은 무효 → null로 리셋
+      const contentChanged =
+        (typeof patch.text === 'string' && patch.text !== box.text) ||
+        (typeof patch.width === 'number' && patch.width !== box.width) ||
+        (typeof patch.fontSize === 'number' && patch.fontSize !== box.fontSize);
+      return contentChanged ? null : (box.measuredLineCount ?? null);
+    })(),
+    measuredTextWidth: (() => {
+      if ('measuredTextWidth' in patch) {
+        const v = patch.measuredTextWidth;
+        if (v === null || v === undefined) return null;
+        return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : box.measuredTextWidth ?? null;
+      }
+      const contentChanged =
+        (typeof patch.text === 'string' && patch.text !== box.text) ||
+        (typeof patch.width === 'number' && patch.width !== box.width) ||
+        (typeof patch.fontSize === 'number' && patch.fontSize !== box.fontSize);
+      return contentChanged ? null : (box.measuredTextWidth ?? null);
+    })(),
   };
 }
 
