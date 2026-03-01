@@ -4413,15 +4413,22 @@ function App() {
                 return (
                   <div
                     key={project.id}
-                    className={`w-[380px] shrink-0 rounded-lg border p-3 ${
+                    className={`w-[210px] shrink-0 rounded-lg border p-3 ${
                       isActive ? 'border-blue-300 bg-blue-50/60' : 'border-zinc-200 bg-white'
                     }`}
                   >
-                    <div className="flex items-center gap-2">
+                    <div className="flex h-full min-h-[196px] flex-col gap-2">
+                      <Input
+                        value={project.name}
+                        onChange={(event) => handleRenameProject(project.id, event.target.value)}
+                        className="h-9 min-w-0 border-zinc-300 bg-white text-sm"
+                      />
+                      <p className="text-xs text-zinc-500">{project.state.canvases.length}개 캔버스</p>
+
                       <button
                         type="button"
                         onClick={() => handleSelectProject(project.id)}
-                        className={`h-9 shrink-0 min-w-[88px] whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
+                        className={`mt-auto h-9 w-full whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
                           isActive
                             ? 'border-blue-300 bg-white text-blue-700'
                             : 'border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50'
@@ -4429,32 +4436,29 @@ function App() {
                       >
                         {isActive ? '선택됨' : '열기'}
                       </button>
-                      <Input
-                        value={project.name}
-                        onChange={(event) => handleRenameProject(project.id, event.target.value)}
-                        className="h-9 min-w-0 flex-1 border-zinc-300 bg-white text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleDuplicateProject(project.id)}
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50"
-                        title="프로젝트 복제"
-                        aria-label={`${project.name} 복제`}
-                      >
-                        <Copy className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteProject(project.id)}
-                        disabled={projects.length <= 1}
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
-                        title={projects.length <= 1 ? '프로젝트는 최소 1개 필요' : '프로젝트 삭제'}
-                        aria-label={`${project.name} 삭제`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDuplicateProject(project.id)}
+                          className="inline-flex h-9 flex-1 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50"
+                          title="프로젝트 복제"
+                          aria-label={`${project.name} 복제`}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteProject(project.id)}
+                          disabled={projects.length <= 1}
+                          className="inline-flex h-9 flex-1 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          title={projects.length <= 1 ? '프로젝트는 최소 1개 필요' : '프로젝트 삭제'}
+                          aria-label={`${project.name} 삭제`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
-                    <p className="mt-2 text-xs text-zinc-500">{project.state.canvases.length}개 캔버스</p>
                   </div>
                 );
               })}
