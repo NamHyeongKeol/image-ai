@@ -800,7 +800,8 @@ function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize
   const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
   ctx.font = `800 ${fontSize}px ${fontFamily}`;
   const lines = wrapTextToLines(ctx, box.text, width);
-  const textWidth = lines.reduce((max, line) => Math.max(max, ctx.measureText(line).width), 0);
+  // Sum measured width of each wrapped line.
+  const textWidth = lines.reduce((sum, line) => sum + ctx.measureText(line).width, 0);
   return { lineCount: lines.length, textWidth };
 }
 
