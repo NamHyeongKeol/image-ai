@@ -295,6 +295,20 @@ interface ApiProjectDetailPayload {
   state?: unknown;
 }
 
+interface ApiProjectFullEntryPayload {
+  project?: {
+    id?: string;
+    name?: string;
+    updatedAt?: string;
+  };
+  state?: unknown;
+}
+
+interface ApiProjectFullListPayload {
+  projects?: ApiProjectFullEntryPayload[];
+  total?: number;
+}
+
 function getCanvasPresetById(id: string) {
   return CANVAS_PRESETS.find((preset) => preset.id === id) ?? DEFAULT_CANVAS_PRESET;
 }
@@ -3071,37 +3085,68 @@ function App() {
           }
         }
 
-        const listResponse = await fetch('/api/projects', { signal: controller.signal });
-        if (!listResponse.ok) {
-          throw new Error('API project list read failed.');
+        let normalizedFetched: ProjectRecord[] = [];
+        const fullResponse = await fetch('/api/projects/full?includeMeta=false&includeRawFile=false', {
+          signal: controller.signal,
+        });
+        if (fullResponse.ok) {
+          const fullPayload = (await fullResponse.json()) as ApiProjectFullListPayload;
+          const rows = Array.isArray(fullPayload.projects) ? fullPayload.projects : [];
+          normalizedFetched = rows
+            .map((row) => {
+              const projectId = row.project?.id;
+              const projectName = row.project?.name;
+              const updatedAt = row.project?.updatedAt;
+              if (!projectId || !projectName || !updatedAt) {
+                return null;
+              }
+
+              return {
+                id: projectId,
+                name: projectName,
+                updatedAt,
+                state: sanitizeProjectState(row.state),
+              } satisfies ProjectRecord;
+            })
+            .filter((project): project is ProjectRecord => Boolean(project));
         }
 
-        const listPayload = (await listResponse.json()) as ApiProjectListPayload;
-        const summaries = Array.isArray(listPayload.projects) ? listPayload.projects : [];
-        const fetchedProjects = await Promise.all(
-          summaries.map(async (summary) => {
-            const detailResponse = await fetch(`/api/projects/${encodeURIComponent(summary.id)}`, {
-              signal: controller.signal,
-            });
-            if (!detailResponse.ok) {
-              return null;
-            }
+        if (normalizedFetched.length === 0) {
+          const listResponse = await fetch('/api/projects', { signal: controller.signal });
+          if (!listResponse.ok) {
+            throw new Error('API project list read failed.');
+          }
 
-            const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
-            const projectId = detailPayload.project?.id ?? summary.id;
-            const projectName = detailPayload.project?.name ?? summary.name;
-            const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
+          const listPayload = (await listResponse.json()) as ApiProjectListPayload;
+          const summaries = Array.isArray(listPayload.projects) ? listPayload.projects : [];
+          const fetchedProjects = await Promise.all(
+            summaries.map(async (summary) => {
+              try {
+                const detailResponse = await fetch(`/api/projects/${encodeURIComponent(summary.id)}`, {
+                  signal: controller.signal,
+                });
+                if (!detailResponse.ok) {
+                  return null;
+                }
 
-            return {
-              id: projectId,
-              name: projectName,
-              updatedAt,
-              state: sanitizeProjectState(detailPayload.state),
-            } satisfies ProjectRecord;
-          }),
-        );
+                const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
+                const projectId = detailPayload.project?.id ?? summary.id;
+                const projectName = detailPayload.project?.name ?? summary.name;
+                const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
 
-        let normalizedFetched = fetchedProjects.filter((project): project is ProjectRecord => Boolean(project));
+                return {
+                  id: projectId,
+                  name: projectName,
+                  updatedAt,
+                  state: sanitizeProjectState(detailPayload.state),
+                } satisfies ProjectRecord;
+              } catch {
+                return null;
+              }
+            }),
+          );
+          normalizedFetched = fetchedProjects.filter((project): project is ProjectRecord => Boolean(project));
+        }
 
         if (normalizedFetched.length === 0) {
           const createResponse = await fetch('/api/projects', {
