@@ -67,8 +67,9 @@ Main endpoints:
 - `PATCH /api/projects/:projectId/canvases/:canvasId/phone`
   - Move/scale iPhone frame (`x`, `y`, `phoneScale` or `offset: { x, y }`)
 - `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
-  - Text box meta including wrapped lines, `lineCount`, and `textWidth`
-  - `textWidth` is measured from normalized single-line text (trim per line + joined with one space)
+  - Text box meta including wrapped lines, `lineCount`, `textWidth`, and `visualTextWidth`
+  - `textWidth`: normalized single-line width (trim per line + joined with one space)
+  - `visualTextWidth`: rendered visual width (max wrapped line width in canvas coordinates)
 - `GET /api/projects/:projectId/canvases/:canvasId/meta`
   - Full canvas shape meta (background, iPhone frame, all text boxes)
 - `GET /api/projects/:projectId/meta`

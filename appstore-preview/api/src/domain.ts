@@ -111,6 +111,7 @@ export interface TextBoxMeta {
   hasManualLineBreak: boolean;
   wrappedByWidth: boolean;
   textWidth: number;
+  visualTextWidth: number;
   maxLineWidth: number;
   font: {
     key: FontKey;
@@ -348,6 +349,7 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
   const normalizedText = normalizeTextForWidth(box.text);
   const textWidth = normalizedText.length > 0 ? measureTextWidth(measureContext, normalizedText) : 0;
   const maxLineWidth = lines.reduce((acc, line) => Math.max(acc, measureTextWidth(measureContext, line)), 0);
+  const visualTextWidth = maxLineWidth;
   const height = Math.max(lineHeight, lineCount * lineHeight);
 
   let lineClassification: TextBoxMeta['lineClassification'] = 'three-or-more-lines';
@@ -374,6 +376,7 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
     hasManualLineBreak,
     wrappedByWidth,
     textWidth,
+    visualTextWidth,
     maxLineWidth,
     font: {
       key: box.fontKey,
