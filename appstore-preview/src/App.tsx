@@ -784,6 +784,29 @@ function measureTextBoxBounds(box: TextBoxModel): Rect {
   };
 }
 
+function centerCanvasElements(state: CanvasDesignState): CanvasDesignState {
+  const canvasSize = getCanvasDimensionsFromState(state);
+  const basePhone = getPhoneBaseMetrics(canvasSize.width, canvasSize.height, state.phoneScale);
+  const targetPhoneX = (canvasSize.width - basePhone.width) / 2;
+  const targetPhoneY = (canvasSize.height - basePhone.height) / 2;
+
+  return {
+    ...state,
+    phoneOffset: {
+      x: targetPhoneX - basePhone.x,
+      y: targetPhoneY - basePhone.y,
+    },
+    textBoxes: state.textBoxes.map((box) => {
+      const boxBounds = measureTextBoxBounds(box);
+      return {
+        ...box,
+        x: (canvasSize.width - boxBounds.width) / 2,
+        y: (canvasSize.height - boxBounds.height) / 2,
+      };
+    }),
+  };
+}
+
 type DomTextMeasureContext = {
   host: HTMLDivElement;
   textNode: Text;
@@ -4593,6 +4616,98 @@ function App() {
     setErrorMessage('');
   }, []);
 
+  const handleCenterCurrentCanvasElements = useCallback(() => {
+    const centeredState = centerCanvasElements(currentCanvasState);
+    setPhoneOffset({ ...centeredState.phoneOffset });
+    setTextBoxes(centeredState.textBoxes.map((box) => ({ ...box })));
+    setStatusMessage('현재 캔버스의 iPhone 프레임/텍스트박스를 가운데 정렬했습니다.');
+    setErrorMessage('');
+  }, [currentCanvasState]);
+
+  const handleCenterCurrentProjectCanvases = useCallback(() => {
+    if (!currentProject || !currentProjectState) {
+      return;
+    }
+
+    const centeredCanvases = currentProjectState.canvases.map((canvas) => ({
+      ...canvas,
+      state: centerCanvasElements(canvas.state),
+    }));
+    const nextProject: ProjectRecord = {
+      ...currentProject,
+      updatedAt: new Date().toISOString(),
+      state: {
+        ...currentProjectState,
+        canvases: centeredCanvases,
+      },
+    };
+
+    markProjectSyncable(currentProject.id);
+    setProjects((previous) =>
+      previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+    );
+
+    const centeredCurrentCanvas = centeredCanvases.find((canvas) => canvas.id === currentCanvasId)?.state;
+    if (centeredCurrentCanvas) {
+      setPhoneOffset({ ...centeredCurrentCanvas.phoneOffset });
+      setTextBoxes(centeredCurrentCanvas.textBoxes.map((box) => ({ ...box })));
+    }
+
+    setStatusMessage(`현재 프로젝트의 ${centeredCanvases.length}개 캔버스를 모두 가운데 정렬했습니다.`);
+    setErrorMessage('');
+  }, [currentCanvasId, currentProject, currentProjectState, markProjectSyncable]);
+
+  const handleCenterAllProjectsCanvases = useCallback(() => {
+    if (projects.length === 0) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const isCurrentProjectDraftReady =
+      loadedProjectIdRef.current === currentProjectId && Boolean(currentProjectState);
+
+    const nextProjects = projects.map((project) => {
+      const sourceState =
+        project.id === currentProjectId && isCurrentProjectDraftReady && currentProjectState
+          ? currentProjectState
+          : project.state;
+
+      const centeredCanvases = sourceState.canvases.map((canvas) => ({
+        ...canvas,
+        state: centerCanvasElements(canvas.state),
+      }));
+
+      return {
+        ...project,
+        updatedAt: now,
+        state: {
+          ...sourceState,
+          canvases: centeredCanvases,
+        },
+      };
+    });
+
+    for (const project of nextProjects) {
+      markProjectSyncable(project.id);
+    }
+
+    setProjects(nextProjects);
+
+    const centeredCurrentCanvas = nextProjects
+      .find((project) => project.id === currentProjectId)
+      ?.state.canvases.find((canvas) => canvas.id === currentCanvasId)?.state;
+
+    if (centeredCurrentCanvas) {
+      setPhoneOffset({ ...centeredCurrentCanvas.phoneOffset });
+      setTextBoxes(centeredCurrentCanvas.textBoxes.map((box) => ({ ...box })));
+    }
+
+    setStatusMessage(
+      `${nextProjects.length}개 프로젝트의 모든 캔버스(iPhone 프레임/텍스트박스)를 가운데 정렬했습니다.`,
+    );
+    setErrorMessage('');
+  }, [currentCanvasId, currentProjectId, currentProjectState, markProjectSyncable, projects]);
+
   const readCanvasMediaRecordForExport = useCallback(
     async (projectId: string, canvasId: string, canvasIndex: number, state: CanvasDesignState) => {
       const mediaKey = buildProjectCanvasMediaKey(projectId, canvasId);
@@ -5222,6 +5337,25 @@ function App() {
       <Button type="button" variant="outline" onClick={resetStyle}>
         <RotateCcw className="h-4 w-4" />
         배경/프레임 초기화
+      </Button>
+      <Button type="button" variant="outline" onClick={handleCenterCurrentCanvasElements}>
+        현재 캔버스 가운데 정렬
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={handleCenterCurrentProjectCanvases}
+        disabled={!currentProjectId || !currentProjectState}
+      >
+        현재 프로젝트 전체 가운데 정렬
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={handleCenterAllProjectsCanvases}
+        disabled={projects.length === 0}
+      >
+        모든 프로젝트 전체 가운데 정렬
       </Button>
       <Button type="button" variant="outline" onClick={handleUndo} disabled={!canUndo}>
         <Undo2 className="h-4 w-4" />
