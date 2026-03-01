@@ -16,6 +16,7 @@ import {
 } from './domain.js';
 import {
   APPSTORE_PREVIEW_ROOT,
+  deleteProjectById,
   ProjectNotFoundError,
   createProject,
   getProjectOrThrow,
@@ -40,7 +41,7 @@ interface JsonObject {
 
 function setCorsHeaders(response: ServerResponse) {
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
@@ -342,6 +343,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   const projectId = getParam(segments, 2, 'projectId');
+
+  if (request.method === 'DELETE' && segments.length === 3) {
+    const removedCount = await deleteProjectById(projectId);
+    sendJson(response, 200, {
+      deleted: true,
+      projectId,
+      removedCount,
+    });
+    return;
+  }
+
   const project = await getProjectOrThrow(projectId);
 
   if (request.method === 'GET' && segments.length === 4 && segments[3] === 'full') {

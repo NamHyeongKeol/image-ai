@@ -76,15 +76,16 @@ Common flow:
 2. Read one project: `GET /api/projects/:projectId`
 3. Read full local dump (all projects): `GET /api/projects/full`
 4. Clone project: `POST /api/projects/:projectId/clone`
-5. Update translated text boxes:
+5. Delete project: `DELETE /api/projects/:projectId`
+6. Update translated text boxes:
    - single: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
    - bulk: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
-6. Verify wrapping/line metadata:
+7. Verify wrapping/line metadata:
    - text box meta: `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
-7. Verify full shape metadata:
+8. Verify full shape metadata:
    - canvas meta: `GET /api/projects/:projectId/canvases/:canvasId/meta`
    - project meta: `GET /api/projects/:projectId/meta`
-8. Export as ZIP: `POST /api/projects/:projectId/export/zip`
+9. Export as ZIP: `POST /api/projects/:projectId/export/zip`
 
 Example requests:
 
@@ -106,23 +107,26 @@ curl -s "http://localhost:4318/api/projects/full?includeMeta=true&includeRawFile
 # 5) full read (one project)
 curl -s "http://localhost:4318/api/projects/<projectId>/full?includeMeta=true&includeRawFile=false"
 
-# 6) patch one text box
+# 6) delete project
+curl -s -X DELETE http://localhost:4318/api/projects/<projectId>
+
+# 7) patch one text box
 curl -s -X PATCH http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId> \
   -H "Content-Type: application/json" \
   -d '{"text":"새 번역 문구","width":540,"fontSize":64}'
 
-# 7) patch multiple text boxes
+# 8) patch multiple text boxes
 curl -s -X PATCH http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes \
   -H "Content-Type: application/json" \
   -d '{"updates":[{"id":"text-1","text":"문구 A","width":520},{"id":"text-2","text":"문구 B","fontSize":56}]}'
 
-# 8) line-wrap/meta check
+# 9) line-wrap/meta check
 curl -s http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId>/meta
 
-# 9) full project meta
+# 10) full project meta
 curl -s http://localhost:4318/api/projects/<projectId>/meta
 
-# 10) zip export
+# 11) zip export
 curl -L -X POST http://localhost:4318/api/projects/<projectId>/export/zip \
   -H "Content-Type: application/json" \
   -d '{"includePngPreview":true}' \

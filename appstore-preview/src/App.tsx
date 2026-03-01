@@ -1984,6 +1984,17 @@ function App() {
     [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia],
   );
 
+  const syncDeleteProjectToApi = useCallback(async (targetProjectId: string) => {
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(targetProjectId)}`, {
+        method: 'DELETE',
+      });
+      return response.ok || response.status === 404;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const handleDeleteProject = useCallback(
     (targetProjectId: string) => {
       if (projects.length <= 1) {
@@ -2028,8 +2039,14 @@ function App() {
 
       setErrorMessage('');
       setStatusMessage(`${syncedTargetProject.name} 프로젝트를 삭제했습니다.`);
+      void (async () => {
+        const synced = await syncDeleteProjectToApi(targetProjectId);
+        if (!synced) {
+          setErrorMessage('API 저장소 삭제 동기화에 실패했습니다. 새로고침 시 다시 보일 수 있습니다.');
+        }
+      })();
     },
-    [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia],
+    [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia, syncDeleteProjectToApi],
   );
 
   const handleSelectCanvas = useCallback(
@@ -4296,89 +4313,87 @@ function App() {
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#d9f4ff_0,#f2f4f7_42%,#eef2ff_100%)] px-4 py-8 text-zinc-900">
       <div className="mx-auto max-w-7xl">
         <header className="rounded-2xl border border-white/70 bg-white/80 px-6 py-5 shadow-sm backdrop-blur">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">App Store Preview Composer</h1>
-              <p className="mt-2 text-sm text-zinc-600">
-                iPhone 규격(886x1920) 기준으로 업로드/드래그 배치 후 결과물을 생성합니다.
-              </p>
-            </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">App Store Preview Composer</h1>
+            <p className="mt-2 text-sm text-zinc-600">
+              iPhone 규격(886x1920) 기준으로 업로드/드래그 배치 후 결과물을 생성합니다.
+            </p>
+          </div>
 
-            <div className="w-full max-w-md space-y-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+          <div className="mt-4 space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <Label className="text-xs text-zinc-500">프로젝트</Label>
-              <div className="max-h-44 space-y-2 overflow-y-auto rounded-md border border-zinc-200 bg-white p-2">
-                {projects.map((project) => {
-                  const isActive = project.id === currentProjectId;
-                  return (
-                    <div
-                      key={project.id}
-                      className={`rounded-md border p-2 ${
-                        isActive ? 'border-blue-300 bg-blue-50/60' : 'border-zinc-200 bg-zinc-50/70'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleSelectProject(project.id)}
-                          className={`h-8 shrink-0 min-w-[64px] whitespace-nowrap rounded-md border px-2 text-[11px] ${
-                            isActive
-                              ? 'border-blue-300 bg-white text-blue-700'
-                              : 'border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50'
-                          }`}
-                        >
-                          {isActive ? '선택됨' : '열기'}
-                        </button>
-                        <Input
-                          value={project.name}
-                          onChange={(event) => handleRenameProject(project.id, event.target.value)}
-                          className="h-8 min-w-0 flex-1 border-zinc-300 bg-white text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleDuplicateProject(project.id)}
-                          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-600 hover:bg-zinc-50"
-                          title="프로젝트 복제"
-                          aria-label={`${project.name} 복제`}
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteProject(project.id)}
-                          disabled={projects.length <= 1}
-                          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
-                          title={projects.length <= 1 ? '프로젝트는 최소 1개 필요' : '프로젝트 삭제'}
-                          aria-label={`${project.name} 삭제`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                      <p className="mt-1 text-[11px] text-zinc-500">{project.state.canvases.length}개 캔버스</p>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="secondary" onClick={handleCreateProject}>
-                  <Plus className="h-4 w-4" />
-                  새 프로젝트
-                </Button>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="outline" onClick={handleConnectSaveDirectory}>
-                  <FolderOpen className="h-4 w-4" />
-                  자동저장 폴더 연결
-                </Button>
-                <span className="text-xs text-zinc-500">
-                  {connectedSaveDirectory ? '.project-saves 자동저장 연결됨' : '폴더 미연결'}
-                </span>
-              </div>
               <p className="text-xs text-zinc-500">
                 {currentProject ? `${currentProject.name} 선택됨` : '프로젝트 없음'}
                 {lastAutoSavedAt ? ` · 마지막 자동저장 ${lastAutoSavedAt}` : ''}
               </p>
+            </div>
+
+            <div className="flex items-stretch gap-3 overflow-x-auto pb-2">
+              {projects.map((project) => {
+                const isActive = project.id === currentProjectId;
+                return (
+                  <div
+                    key={project.id}
+                    className={`w-[380px] shrink-0 rounded-lg border p-3 ${
+                      isActive ? 'border-blue-300 bg-blue-50/60' : 'border-zinc-200 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectProject(project.id)}
+                        className={`h-9 shrink-0 min-w-[88px] whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
+                          isActive
+                            ? 'border-blue-300 bg-white text-blue-700'
+                            : 'border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50'
+                        }`}
+                      >
+                        {isActive ? '선택됨' : '열기'}
+                      </button>
+                      <Input
+                        value={project.name}
+                        onChange={(event) => handleRenameProject(project.id, event.target.value)}
+                        className="h-9 min-w-0 flex-1 border-zinc-300 bg-white text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDuplicateProject(project.id)}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50"
+                        title="프로젝트 복제"
+                        aria-label={`${project.name} 복제`}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteProject(project.id)}
+                        disabled={projects.length <= 1}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        title={projects.length <= 1 ? '프로젝트는 최소 1개 필요' : '프로젝트 삭제'}
+                        aria-label={`${project.name} 삭제`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">{project.state.canvases.length}개 캔버스</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="secondary" onClick={handleCreateProject}>
+                <Plus className="h-4 w-4" />
+                새 프로젝트
+              </Button>
+              <Button type="button" variant="outline" onClick={handleConnectSaveDirectory}>
+                <FolderOpen className="h-4 w-4" />
+                자동저장 폴더 연결
+              </Button>
+              <span className="text-xs text-zinc-500">
+                {connectedSaveDirectory ? '.project-saves 자동저장 연결됨' : '폴더 미연결'}
+              </span>
             </div>
           </div>
         </header>

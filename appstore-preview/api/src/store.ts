@@ -219,3 +219,29 @@ export async function createProject(name?: string, state?: ProjectDesignState) {
   );
   return saveProject(project);
 }
+
+export async function deleteProjectById(projectId: string) {
+  await ensureDirectories();
+
+  const unifiedPaths = await listProjectFilePaths(PROJECT_SAVES_DIR);
+  const legacyPaths = await listLegacyJsonPaths();
+  const allPaths = [...unifiedPaths, ...legacyPaths];
+
+  let removedCount = 0;
+  for (const sourcePath of allPaths) {
+    const value = await tryReadJsonFile(sourcePath);
+    const normalized = normalizeProjectRecord(value, 'api', sourcePath);
+    if (!normalized || normalized.id !== projectId) {
+      continue;
+    }
+
+    await rm(sourcePath, { force: true });
+    removedCount += 1;
+  }
+
+  if (removedCount === 0) {
+    throw new ProjectNotFoundError(projectId);
+  }
+
+  return removedCount;
+}

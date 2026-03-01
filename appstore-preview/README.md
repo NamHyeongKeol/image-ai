@@ -43,6 +43,8 @@ Main endpoints:
   - Full read dump for all local projects (`state` + `metas` + `rawFile`)
 - `POST /api/projects/:projectId/clone`
   - Clone an existing project
+- `DELETE /api/projects/:projectId`
+  - Delete one project from API storage
 - `GET /api/projects/:projectId/full`
   - Full read dump for one project (`state` + `metas` + `rawFile`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
