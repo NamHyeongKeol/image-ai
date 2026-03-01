@@ -253,6 +253,7 @@ const HISTORY_IDLE_COMMIT_DELAY_MS = 100;
 const PROJECT_MEDIA_DB_NAME = 'appstore-preview-media-db';
 const PROJECT_MEDIA_DB_VERSION = 1;
 const PROJECT_MEDIA_STORE_NAME = 'project_media';
+const CANVAS_CLIPBOARD_PREFIX = 'appstore-preview-canvas/v1:';
 
 interface FileHandleLike {
   createWritable: () => Promise<{
@@ -273,6 +274,20 @@ interface ProjectMediaRecord {
   type: string;
   blob: Blob;
   updatedAt: string;
+}
+
+interface CanvasClipboardPayload {
+  version: 1;
+  sourceProjectId: string;
+  sourceCanvasId: string;
+  canvasName: string;
+  state: CanvasDesignState;
+  copiedAt: string;
+}
+
+interface InMemoryCanvasClipboardPayload extends CanvasClipboardPayload {
+  thumbnailDataUrl?: string;
+  mediaRecord: ProjectMediaRecord | null;
 }
 
 interface ApiProjectSummaryPayload {
@@ -1215,6 +1230,64 @@ function buildBatchCanvasOutputFileName(index: number, canvasName: string, exten
   return `${indexLabel}-${safeCanvasName}.${extension}`;
 }
 
+function encodeCanvasClipboardPayload(payload: CanvasClipboardPayload) {
+  return `${CANVAS_CLIPBOARD_PREFIX}${JSON.stringify(payload)}`;
+}
+
+function decodeCanvasClipboardPayloadText(rawText: string): CanvasClipboardPayload | null {
+  if (!rawText.startsWith(CANVAS_CLIPBOARD_PREFIX)) {
+    return null;
+  }
+
+  const jsonText = rawText.slice(CANVAS_CLIPBOARD_PREFIX.length);
+  if (!jsonText) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText) as Partial<CanvasClipboardPayload>;
+    if (
+      parsed.version !== 1 ||
+      typeof parsed.sourceProjectId !== 'string' ||
+      typeof parsed.sourceCanvasId !== 'string' ||
+      typeof parsed.canvasName !== 'string' ||
+      typeof parsed.copiedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    const normalized = sanitizeProjectStateCore(
+      {
+        canvases: [
+          {
+            id: 'clipboard-canvas',
+            name: parsed.canvasName,
+            state: parsed.state,
+          },
+        ],
+        currentCanvasId: 'clipboard-canvas',
+      },
+      {
+        defaultCanvasName: '캔버스 1',
+        canvasNamePrefix: '캔버스',
+        legacyFallback: true,
+      },
+    );
+    const normalizedState = normalized.canvases[0]?.state ?? createEmptyCanvasStateCore();
+
+    return {
+      version: 1,
+      sourceProjectId: parsed.sourceProjectId,
+      sourceCanvasId: parsed.sourceCanvasId,
+      canvasName: parsed.canvasName,
+      state: cloneCanvasStateCore(normalizedState),
+      copiedAt: parsed.copiedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function blobFromCanvas(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -1255,6 +1328,8 @@ function App() {
   const mediaRestoreTokenRef = useRef(0);
   const loadedProjectIdRef = useRef<string | null>(null);
   const copiedTextBoxRef = useRef<TextBoxModel | null>(null);
+  const copiedCanvasRef = useRef<InMemoryCanvasClipboardPayload | null>(null);
+  const lastCopyKindRef = useRef<'text-box' | 'canvas' | null>(null);
   const historyEntryRef = useRef<AppHistoryEntry>({ past: [], present: null, future: [] });
   const isApplyingHistoryRef = useRef(false);
   const apiHydrationCompletedRef = useRef(false);
@@ -2175,22 +2250,24 @@ function App() {
     setStatusMessage('새 캔버스를 추가했습니다.');
   }, [applyProjectState, canvasPresetId, currentProject, currentProjectState, restoreProjectMedia]);
 
-  const handleDuplicateCanvas = useCallback(
-    (sourceCanvasId: string) => {
+  const duplicateCanvasIntoCurrentProject = useCallback(
+    async (options: {
+      sourceProjectId: string;
+      sourceCanvasId: string;
+      sourceCanvasName: string;
+      sourceCanvasState: CanvasDesignState;
+      sourceThumbnailDataUrl?: string;
+      preferredMediaRecord?: ProjectMediaRecord | null;
+    }) => {
       if (!currentProject || !currentProjectState) {
-        return;
-      }
-
-      const sourceCanvas = currentProjectState.canvases.find((canvas) => canvas.id === sourceCanvasId);
-      if (!sourceCanvas) {
-        return;
+        return false;
       }
 
       const duplicatedCanvas = createCanvasRecord(
         createNextCanvasName(currentProjectState.canvases),
-        cloneCanvasState(sourceCanvas.state),
+        cloneCanvasState(options.sourceCanvasState),
       );
-      duplicatedCanvas.thumbnailDataUrl = sourceCanvas.thumbnailDataUrl;
+      duplicatedCanvas.thumbnailDataUrl = options.sourceThumbnailDataUrl;
 
       const now = new Date().toISOString();
       const nextState: ProjectDesignState = {
@@ -2203,40 +2280,74 @@ function App() {
         state: nextState,
       };
 
-      void (async () => {
-        let mediaCopyFailed = false;
-        if (sourceCanvas.state.media.kind) {
-          try {
-            const sourceMediaKey = buildProjectCanvasMediaKey(currentProject.id, sourceCanvas.id);
-            const duplicatedMediaKey = buildProjectCanvasMediaKey(currentProject.id, duplicatedCanvas.id);
-            const sourceMediaRecord = await readProjectMediaRecord(sourceMediaKey);
-            if (sourceMediaRecord) {
-              await saveProjectMediaRecord({
-                ...sourceMediaRecord,
-                projectId: duplicatedMediaKey,
-                updatedAt: new Date().toISOString(),
-              });
+      let mediaCopyFailed = false;
+      if (duplicatedCanvas.state.media.kind) {
+        try {
+          let mediaRecord = options.preferredMediaRecord ?? null;
+          if (!mediaRecord) {
+            const sourceMediaKey = buildProjectCanvasMediaKey(options.sourceProjectId, options.sourceCanvasId);
+            mediaRecord = await readProjectMediaRecord(sourceMediaKey);
+            if (!mediaRecord) {
+              mediaRecord = await readProjectMediaRecord(options.sourceProjectId);
             }
-          } catch {
-            mediaCopyFailed = true;
+            if (!mediaRecord && duplicatedCanvas.state.media.name) {
+              mediaRecord = await findProjectMediaRecordByKindAndName(
+                duplicatedCanvas.state.media.kind,
+                duplicatedCanvas.state.media.name,
+              );
+            }
           }
-        }
 
-        setProjects((previous) =>
-          previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
-        );
-        applyProjectState(nextProject, duplicatedCanvas.id);
-        await restoreProjectMedia(nextProject, duplicatedCanvas.id);
-
-        if (mediaCopyFailed) {
-          setErrorMessage('캔버스는 복제했지만 미디어 복사에 실패했습니다. 필요 시 다시 업로드해 주세요.');
-        } else {
-          setErrorMessage('');
+          if (mediaRecord) {
+            const duplicatedMediaKey = buildProjectCanvasMediaKey(currentProject.id, duplicatedCanvas.id);
+            await saveProjectMediaRecord({
+              ...mediaRecord,
+              projectId: duplicatedMediaKey,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        } catch {
+          mediaCopyFailed = true;
         }
-        setStatusMessage(`${sourceCanvas.name} 캔버스를 복제해 ${duplicatedCanvas.name}를 만들었습니다.`);
-      })();
+      }
+
+      setProjects((previous) =>
+        previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
+      );
+      applyProjectState(nextProject, duplicatedCanvas.id);
+      await restoreProjectMedia(nextProject, duplicatedCanvas.id);
+
+      if (mediaCopyFailed) {
+        setErrorMessage('캔버스는 복제했지만 미디어 복사에 실패했습니다. 필요 시 다시 업로드해 주세요.');
+      } else {
+        setErrorMessage('');
+      }
+      setStatusMessage(`${options.sourceCanvasName} 캔버스를 복제해 ${duplicatedCanvas.name}를 만들었습니다.`);
+      return true;
     },
     [applyProjectState, currentProject, currentProjectState, restoreProjectMedia],
+  );
+
+  const handleDuplicateCanvas = useCallback(
+    (sourceCanvasId: string) => {
+      if (!currentProject || !currentProjectState) {
+        return;
+      }
+
+      const sourceCanvas = currentProjectState.canvases.find((canvas) => canvas.id === sourceCanvasId);
+      if (!sourceCanvas) {
+        return;
+      }
+
+      void duplicateCanvasIntoCurrentProject({
+        sourceProjectId: currentProject.id,
+        sourceCanvasId,
+        sourceCanvasName: sourceCanvas.name,
+        sourceCanvasState: cloneCanvasState(sourceCanvas.state),
+        sourceThumbnailDataUrl: sourceCanvas.thumbnailDataUrl,
+      });
+    },
+    [currentProject, currentProjectState, duplicateCanvasIntoCurrentProject],
   );
 
   const handleDeleteCanvas = useCallback(
@@ -2421,6 +2532,7 @@ function App() {
       return false;
     }
 
+    lastCopyKindRef.current = 'text-box';
     copiedTextBoxRef.current = { ...selectedTextBox };
     setHasCopiedTextBox(true);
     setStatusMessage('선택한 텍스트박스를 복사했습니다.');
@@ -2450,6 +2562,124 @@ function App() {
     setErrorMessage('');
     return true;
   }, []);
+
+  const copyCurrentCanvasToClipboard = useCallback(async () => {
+    if (!currentProject || !currentProjectState) {
+      return false;
+    }
+
+    const sourceCanvas =
+      currentProjectState.canvases.find((canvas) => canvas.id === currentCanvasId) ?? currentProjectState.canvases[0];
+    if (!sourceCanvas) {
+      return false;
+    }
+
+    let mediaRecord: ProjectMediaRecord | null = null;
+    if (sourceCanvas.state.media.kind) {
+      const sourceMediaKey = buildProjectCanvasMediaKey(currentProject.id, sourceCanvas.id);
+      mediaRecord = await readProjectMediaRecord(sourceMediaKey);
+      if (!mediaRecord) {
+        mediaRecord = await readProjectMediaRecord(currentProject.id);
+      }
+      if (!mediaRecord && sourceCanvas.state.media.name) {
+        mediaRecord = await findProjectMediaRecordByKindAndName(
+          sourceCanvas.state.media.kind,
+          sourceCanvas.state.media.name,
+        );
+      }
+    }
+
+    const payload: CanvasClipboardPayload = {
+      version: 1,
+      sourceProjectId: currentProject.id,
+      sourceCanvasId: sourceCanvas.id,
+      canvasName: sourceCanvas.name,
+      state: cloneCanvasState(sourceCanvas.state),
+      copiedAt: new Date().toISOString(),
+    };
+    lastCopyKindRef.current = 'canvas';
+    copiedCanvasRef.current = {
+      ...payload,
+      thumbnailDataUrl: sourceCanvas.thumbnailDataUrl,
+      mediaRecord,
+    };
+
+    const clipboardText = encodeCanvasClipboardPayload(payload);
+    let clipboardWriteSucceeded = false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(clipboardText);
+        clipboardWriteSucceeded = true;
+      }
+    } catch {
+      clipboardWriteSucceeded = false;
+    }
+
+    if (clipboardWriteSucceeded) {
+      setStatusMessage(`${sourceCanvas.name} 캔버스 메타데이터를 클립보드에 복사했습니다.`);
+      setErrorMessage('');
+    } else {
+      setStatusMessage(`${sourceCanvas.name} 캔버스를 내부 클립보드에 복사했습니다.`);
+      setErrorMessage('브라우저 클립보드 쓰기 권한이 없어 같은 탭 내 붙여넣기만 보장됩니다.');
+    }
+    return true;
+  }, [currentCanvasId, currentProject, currentProjectState]);
+
+  const pasteCanvasFromClipboard = useCallback(async () => {
+    if (!currentProject || !currentProjectState) {
+      return false;
+    }
+
+    let payload: CanvasClipboardPayload | null = null;
+    let preferredMediaRecord: ProjectMediaRecord | null = null;
+    let preferredThumbnailDataUrl: string | undefined;
+
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+        const rawText = await navigator.clipboard.readText();
+        payload = decodeCanvasClipboardPayloadText(rawText);
+      }
+    } catch {
+      payload = null;
+    }
+
+    const inMemoryPayload = copiedCanvasRef.current;
+    if (payload) {
+      if (
+        inMemoryPayload &&
+        inMemoryPayload.sourceProjectId === payload.sourceProjectId &&
+        inMemoryPayload.sourceCanvasId === payload.sourceCanvasId &&
+        inMemoryPayload.copiedAt === payload.copiedAt
+      ) {
+        preferredMediaRecord = inMemoryPayload.mediaRecord;
+        preferredThumbnailDataUrl = inMemoryPayload.thumbnailDataUrl;
+      }
+    } else if (inMemoryPayload && lastCopyKindRef.current === 'canvas') {
+      payload = {
+        version: inMemoryPayload.version,
+        sourceProjectId: inMemoryPayload.sourceProjectId,
+        sourceCanvasId: inMemoryPayload.sourceCanvasId,
+        canvasName: inMemoryPayload.canvasName,
+        state: cloneCanvasState(inMemoryPayload.state),
+        copiedAt: inMemoryPayload.copiedAt,
+      };
+      preferredMediaRecord = inMemoryPayload.mediaRecord;
+      preferredThumbnailDataUrl = inMemoryPayload.thumbnailDataUrl;
+    }
+
+    if (!payload) {
+      return false;
+    }
+
+    return duplicateCanvasIntoCurrentProject({
+      sourceProjectId: payload.sourceProjectId,
+      sourceCanvasId: payload.sourceCanvasId,
+      sourceCanvasName: payload.canvasName,
+      sourceCanvasState: cloneCanvasState(payload.state),
+      sourceThumbnailDataUrl: preferredThumbnailDataUrl,
+      preferredMediaRecord,
+    });
+  }, [currentProject, currentProjectState, duplicateCanvasIntoCurrentProject]);
 
   const applyAppHistorySnapshot = useCallback(
     (snapshot: AppHistorySnapshot) => {
@@ -2747,14 +2977,29 @@ function App() {
       if (isCopyKey) {
         if (selectedTextBox && copySelectedTextBox()) {
           event.preventDefault();
+          return;
         }
+        event.preventDefault();
+        void copyCurrentCanvasToClipboard();
         return;
       }
 
       if (isPasteKey) {
-        if (hasCopiedTextBox && pasteCopiedTextBox()) {
-          event.preventDefault();
-        }
+        event.preventDefault();
+        void (async () => {
+          if (lastCopyKindRef.current === 'text-box' && hasCopiedTextBox) {
+            pasteCopiedTextBox();
+            return;
+          }
+
+          const didPasteCanvas = await pasteCanvasFromClipboard();
+          if (didPasteCanvas) {
+            return;
+          }
+          if (hasCopiedTextBox) {
+            pasteCopiedTextBox();
+          }
+        })();
       }
     };
 
@@ -2763,10 +3008,12 @@ function App() {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [
+    copyCurrentCanvasToClipboard,
     copySelectedTextBox,
     handleRedo,
     handleUndo,
     hasCopiedTextBox,
+    pasteCanvasFromClipboard,
     pasteCopiedTextBox,
     selectedTextBox,
     selectedTextBoxId,
