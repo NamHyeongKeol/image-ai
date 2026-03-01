@@ -35,9 +35,6 @@ export interface TextBoxModel {
   measuredLineCountByDom?: number | null;
   measuredTextWidthByCanvas?: number | null;
   measuredTextWidthByDom?: number | null;
-  // Legacy fields (read compatibility only)
-  measuredLineCount?: number | null;
-  measuredTextWidth?: number | null;
 }
 
 export interface CanvasDesignState {
@@ -243,6 +240,9 @@ export function sanitizeCanvasState(state: unknown): CanvasDesignState {
   const raw = state as Partial<CanvasDesignState>;
   const preset = getCanvasPresetById(safeString(raw.canvasPresetId, DEFAULT_CANVAS_PRESET.id));
   const media = raw.media as CanvasDesignState['media'] | undefined;
+  const rawTextBoxes = Array.isArray((state as { textBoxes?: unknown }).textBoxes)
+    ? ((state as { textBoxes: unknown[] }).textBoxes)
+    : [];
 
   return {
     canvasPresetId: preset.id,
@@ -255,32 +255,35 @@ export function sanitizeCanvasState(state: unknown): CanvasDesignState {
       y: safeNumber(raw.phoneOffset?.y, 0),
     },
     phoneScale: safeNumber(raw.phoneScale, 1),
-    textBoxes: Array.isArray(raw.textBoxes)
-      ? raw.textBoxes
-          .filter((box): box is TextBoxModel => Boolean(box && typeof box === 'object'))
-          .map((box, index) => ({
-            id: safeString(box.id, `text-${index + 1}`),
-            text: safeString(box.text),
-            x: safeNumber(box.x),
-            y: safeNumber(box.y),
-            width: clamp(safeNumber(box.width, 320), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH),
-            fontKey: isFontKey(box.fontKey) ? box.fontKey : FONT_OPTIONS[0].key,
-            fontSize: clamp(safeNumber(box.fontSize, 48), TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
-            color: safeString(box.color, '#1f3b7c'),
-            measuredLineCountByCanvas: normalizeMeasuredLineCount(
-              box.measuredLineCountByCanvas ?? box.measuredLineCount,
-            ),
-            measuredLineCountByDom: normalizeMeasuredLineCount(
-              box.measuredLineCountByDom ?? box.measuredLineCount,
-            ),
-            measuredTextWidthByCanvas: normalizeMeasuredTextWidth(
-              box.measuredTextWidthByCanvas ?? box.measuredTextWidth,
-            ),
-            measuredTextWidthByDom: normalizeMeasuredTextWidth(
-              box.measuredTextWidthByDom ?? box.measuredTextWidth,
-            ),
-          }))
-      : [],
+    textBoxes: rawTextBoxes
+      .filter((box): box is Record<string, unknown> => Boolean(box && typeof box === 'object'))
+      .map((box, index) => {
+        // One-way migration from legacy measured fields (if present in old saved JSON).
+        const legacyMeasuredLineCount = box.measuredLineCount;
+        const legacyMeasuredTextWidth = box.measuredTextWidth;
+        return {
+          id: safeString(box.id, `text-${index + 1}`),
+          text: safeString(box.text),
+          x: safeNumber(box.x),
+          y: safeNumber(box.y),
+          width: clamp(safeNumber(box.width, 320), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH),
+          fontKey: isFontKey(box.fontKey) ? box.fontKey : FONT_OPTIONS[0].key,
+          fontSize: clamp(safeNumber(box.fontSize, 48), TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
+          color: safeString(box.color, '#1f3b7c'),
+          measuredLineCountByCanvas: normalizeMeasuredLineCount(
+            box.measuredLineCountByCanvas ?? legacyMeasuredLineCount,
+          ),
+          measuredLineCountByDom: normalizeMeasuredLineCount(
+            box.measuredLineCountByDom ?? legacyMeasuredLineCount,
+          ),
+          measuredTextWidthByCanvas: normalizeMeasuredTextWidth(
+            box.measuredTextWidthByCanvas ?? legacyMeasuredTextWidth,
+          ),
+          measuredTextWidthByDom: normalizeMeasuredTextWidth(
+            box.measuredTextWidthByDom ?? legacyMeasuredTextWidth,
+          ),
+        };
+      }),
     media: {
       kind: media?.kind === 'image' || media?.kind === 'video' ? media.kind : null,
       name: safeString(media?.name),

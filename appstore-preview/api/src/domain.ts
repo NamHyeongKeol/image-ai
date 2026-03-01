@@ -114,9 +114,6 @@ export interface TextBoxMeta {
   measuredLineCountByDom: number | null;
   measuredTextWidthByCanvas: number | null;
   measuredTextWidthByDom: number | null;
-  // Legacy aliases for compatibility with older clients.
-  measuredLineCount: number | null;
-  measuredTextWidth: number | null;
   font: {
     key: FontKey;
     family: string;
@@ -391,16 +388,16 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
   const wrappedByWidth = !hasManualLineBreak && lineCount > 1;
 
   const measuredLineCountByCanvas = normalizeMeasuredLineCount(
-    box.measuredLineCountByCanvas ?? box.measuredLineCount,
+    box.measuredLineCountByCanvas,
   );
   const measuredLineCountByDom = normalizeMeasuredLineCount(
-    box.measuredLineCountByDom ?? box.measuredLineCount,
+    box.measuredLineCountByDom,
   );
   const measuredTextWidthByCanvas = normalizeMeasuredTextWidth(
-    box.measuredTextWidthByCanvas ?? box.measuredTextWidth,
+    box.measuredTextWidthByCanvas,
   );
   const measuredTextWidthByDom = normalizeMeasuredTextWidth(
-    box.measuredTextWidthByDom ?? box.measuredTextWidth,
+    box.measuredTextWidthByDom,
   );
 
   return {
@@ -420,8 +417,6 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
     measuredLineCountByDom,
     measuredTextWidthByCanvas,
     measuredTextWidthByDom,
-    measuredLineCount: measuredLineCountByCanvas,
-    measuredTextWidth: measuredTextWidthByDom,
     font: {
       key: box.fontKey,
       family: fontFamily,
@@ -564,32 +559,22 @@ export function patchTextBox(
 
   const resolveLineMetric = (
     explicit: unknown,
-    legacy: unknown,
     current: number | null | undefined,
   ) => {
     if (explicit !== undefined) {
       if (explicit === null) return null;
       return normalizeMeasuredLineCount(explicit) ?? (current ?? null);
     }
-    if (legacy !== undefined) {
-      if (legacy === null) return null;
-      return normalizeMeasuredLineCount(legacy) ?? (current ?? null);
-    }
     return contentChanged ? null : (current ?? null);
   };
 
   const resolveWidthMetric = (
     explicit: unknown,
-    legacy: unknown,
     current: number | null | undefined,
   ) => {
     if (explicit !== undefined) {
       if (explicit === null) return null;
       return normalizeMeasuredTextWidth(explicit) ?? (current ?? null);
-    }
-    if (legacy !== undefined) {
-      if (legacy === null) return null;
-      return normalizeMeasuredTextWidth(legacy) ?? (current ?? null);
     }
     return contentChanged ? null : (current ?? null);
   };
@@ -611,23 +596,19 @@ export function patchTextBox(
     color: typeof patch.color === "string" ? patch.color : box.color,
     measuredLineCountByCanvas: resolveLineMetric(
       patch.measuredLineCountByCanvas,
-      patch.measuredLineCount,
-      box.measuredLineCountByCanvas ?? box.measuredLineCount,
+      box.measuredLineCountByCanvas,
     ),
     measuredLineCountByDom: resolveLineMetric(
       patch.measuredLineCountByDom,
-      undefined,
-      box.measuredLineCountByDom ?? box.measuredLineCount,
+      box.measuredLineCountByDom,
     ),
     measuredTextWidthByCanvas: resolveWidthMetric(
       patch.measuredTextWidthByCanvas,
-      undefined,
-      box.measuredTextWidthByCanvas ?? box.measuredTextWidth,
+      box.measuredTextWidthByCanvas,
     ),
     measuredTextWidthByDom: resolveWidthMetric(
       patch.measuredTextWidthByDom,
-      patch.measuredTextWidth,
-      box.measuredTextWidthByDom ?? box.measuredTextWidth,
+      box.measuredTextWidthByDom,
     ),
   };
 }

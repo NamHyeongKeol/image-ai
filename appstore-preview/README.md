@@ -93,7 +93,6 @@ Notes:
 - Measurement values are stored in both engines:
   - `*ByCanvas`: canvas-wrap/canvas-measure based
   - `*ByDom`: browser DOM layout based
-- Legacy fields (`measuredLineCount`, `measuredTextWidth`) are still read for backward compatibility.
 - When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs project changes back to API.
 - Project SoT is the API file storage (`.project-saves/*.appstore-preview-project.json`) for both GUI and API reads/writes.
 - Legacy browser `localStorage` project data is used only for one-time migration to API storage, then no longer used as runtime state.
