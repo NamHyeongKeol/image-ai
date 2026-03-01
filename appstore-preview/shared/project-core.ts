@@ -81,6 +81,7 @@ export const CANVAS_PRESETS = [
 export const DEFAULT_CANVAS_PRESET = CANVAS_PRESETS[0];
 export const TEXT_BOX_MIN_WIDTH = 120;
 export const TEXT_BOX_MAX_WIDTH = 1200;
+export const TEXT_BOX_MAX_WIDTH_RATIO = 0.93;
 export const TEXT_BOX_FONT_SIZE_MIN = 18;
 export const TEXT_BOX_FONT_SIZE_MAX = 160;
 export const PHONE_WIDTH_RATIO = (DEFAULT_CANVAS_PRESET.width - 220) / DEFAULT_CANVAS_PRESET.width;
@@ -111,6 +112,16 @@ export function clamp(value: number, min: number, max: number) {
 
 export function getCanvasPresetById(id: string) {
   return CANVAS_PRESETS.find((preset) => preset.id === id) ?? DEFAULT_CANVAS_PRESET;
+}
+
+export function getTextBoxMaxWidthForCanvasWidth(canvasWidth: number) {
+  const safeCanvasWidth = Number.isFinite(canvasWidth) ? canvasWidth : DEFAULT_CANVAS_PRESET.width;
+  return Math.max(TEXT_BOX_MIN_WIDTH, Math.round(safeCanvasWidth * TEXT_BOX_MAX_WIDTH_RATIO));
+}
+
+export function getTextBoxMaxWidthForPresetId(presetId: string) {
+  const preset = getCanvasPresetById(presetId);
+  return getTextBoxMaxWidthForCanvasWidth(preset.width);
 }
 
 export function getCanvasDimensionsFromState(state: CanvasDesignState) {
@@ -239,6 +250,7 @@ export function sanitizeCanvasState(state: unknown): CanvasDesignState {
 
   const raw = state as Partial<CanvasDesignState>;
   const preset = getCanvasPresetById(safeString(raw.canvasPresetId, DEFAULT_CANVAS_PRESET.id));
+  const maxTextBoxWidth = getTextBoxMaxWidthForCanvasWidth(preset.width);
   const media = raw.media as CanvasDesignState['media'] | undefined;
   const rawTextBoxes = Array.isArray((state as { textBoxes?: unknown }).textBoxes)
     ? ((state as { textBoxes: unknown[] }).textBoxes)
@@ -266,7 +278,7 @@ export function sanitizeCanvasState(state: unknown): CanvasDesignState {
           text: safeString(box.text),
           x: safeNumber(box.x),
           y: safeNumber(box.y),
-          width: clamp(safeNumber(box.width, 320), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH),
+          width: clamp(safeNumber(box.width, 320), TEXT_BOX_MIN_WIDTH, maxTextBoxWidth),
           fontKey: isFontKey(box.fontKey) ? box.fontKey : FONT_OPTIONS[0].key,
           fontSize: clamp(safeNumber(box.fontSize, 48), TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
           color: safeString(box.color, '#1f3b7c'),

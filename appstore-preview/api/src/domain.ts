@@ -21,6 +21,7 @@ import {
   getCanvasDimensionsFromState,
   getCanvasPresetById,
   getFontFamily,
+  getTextBoxMaxWidthForPresetId,
   getPhoneBaseMetrics,
   isFontKey,
   sanitizeCanvasState,
@@ -58,6 +59,7 @@ export {
   getCanvasDimensionsFromState,
   getCanvasPresetById,
   getFontFamily,
+  getTextBoxMaxWidthForPresetId,
   getPhoneBaseMetrics,
   sanitizeCanvasState,
   sanitizeFileNameSegment,
@@ -360,6 +362,7 @@ export function wrapTextToLines(
 
 export function measureTextMetricsByCanvas(
   box: Pick<TextBoxModel, "text" | "width" | "fontSize" | "fontKey">,
+  maxWidth = TEXT_BOX_MAX_WIDTH,
 ) {
   const fontFamily = getFontFamily(box.fontKey);
   const fontSize = clamp(
@@ -367,7 +370,7 @@ export function measureTextMetricsByCanvas(
     TEXT_BOX_FONT_SIZE_MIN,
     TEXT_BOX_FONT_SIZE_MAX,
   );
-  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, maxWidth);
 
   if (measureContext) {
     measureContext.font = `800 ${fontSize}px ${fontFamily}`;
@@ -386,6 +389,7 @@ export function measureTextMetricsByCanvas(
 
 export function computeSingleLineMinWidthByCanvas(
   box: Pick<TextBoxModel, "text" | "fontSize" | "fontKey">,
+  maxWidth = TEXT_BOX_MAX_WIDTH,
 ) {
   const fontFamily = getFontFamily(box.fontKey);
   const fontSize = clamp(
@@ -402,13 +406,14 @@ export function computeSingleLineMinWidthByCanvas(
     measureContext.font = `800 ${fontSize}px ${fontFamily}`;
   }
   const measured = measureTextWidth(measureContext, textForSingleLine);
-  return clamp(Math.ceil(measured + 1), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  return clamp(Math.ceil(measured + 1), TEXT_BOX_MIN_WIDTH, maxWidth);
 }
 
 export function centerCanvasElementsHorizontally(
   state: CanvasDesignState,
 ): CanvasDesignState {
   const canvasSize = getCanvasDimensionsFromState(state);
+  const maxTextBoxWidth = getTextBoxMaxWidthForPresetId(state.canvasPresetId);
   const basePhone = getPhoneBaseMetrics(
     canvasSize.width,
     canvasSize.height,
@@ -424,7 +429,7 @@ export function centerCanvasElementsHorizontally(
     },
     textBoxes: state.textBoxes.map((box) => ({
       ...box,
-      x: (canvasSize.width - clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH)) / 2,
+      x: (canvasSize.width - clamp(box.width, TEXT_BOX_MIN_WIDTH, maxTextBoxWidth)) / 2,
       y: box.y,
     })),
   };
@@ -433,16 +438,17 @@ export function centerCanvasElementsHorizontally(
 export function shrinkCanvasTextBoxesToSingleLineByCanvas(
   state: CanvasDesignState,
 ): CanvasDesignState {
+  const maxTextBoxWidth = getTextBoxMaxWidthForPresetId(state.canvasPresetId);
   return {
     ...state,
     textBoxes: state.textBoxes.map((box) => {
-      const nextWidth = computeSingleLineMinWidthByCanvas(box);
+      const nextWidth = computeSingleLineMinWidthByCanvas(box, maxTextBoxWidth);
       const measured = measureTextMetricsByCanvas({
         text: box.text,
         width: nextWidth,
         fontSize: box.fontSize,
         fontKey: box.fontKey,
-      });
+      }, maxTextBoxWidth);
       return {
         ...box,
         width: nextWidth,
@@ -455,9 +461,12 @@ export function shrinkCanvasTextBoxesToSingleLineByCanvas(
   };
 }
 
-export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
+export function computeTextBoxMeta(
+  box: TextBoxModel,
+  maxWidth = TEXT_BOX_MAX_WIDTH,
+): TextBoxMeta {
   const fontFamily = getFontFamily(box.fontKey);
-  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, maxWidth);
   const fontSize = clamp(
     box.fontSize,
     TEXT_BOX_FONT_SIZE_MIN,
@@ -574,6 +583,7 @@ export function computePhoneMeta(
 
 export function computeCanvasMeta(canvas: ProjectCanvasRecord): CanvasMeta {
   const preset = getCanvasPresetById(canvas.state.canvasPresetId);
+  const maxTextBoxWidth = getTextBoxMaxWidthForPresetId(canvas.state.canvasPresetId);
   const phone = computePhoneMeta(
     preset.width,
     preset.height,
@@ -581,7 +591,7 @@ export function computeCanvasMeta(canvas: ProjectCanvasRecord): CanvasMeta {
     canvas.state.phoneScale,
   );
   const textBoxes = canvas.state.textBoxes.map((box) =>
-    computeTextBoxMeta(box),
+    computeTextBoxMeta(box, maxTextBoxWidth),
   );
 
   return {
@@ -647,6 +657,7 @@ export function findTextBox(canvas: ProjectCanvasRecord, textBoxId: string) {
 export function patchTextBox(
   box: TextBoxModel,
   patch: Partial<TextBoxModel>,
+  maxWidth = TEXT_BOX_MAX_WIDTH,
 ): TextBoxModel {
   const contentChanged =
     (typeof patch.text === "string" && patch.text !== box.text) ||
@@ -683,7 +694,7 @@ export function patchTextBox(
     y: typeof patch.y === "number" ? patch.y : box.y,
     width:
       typeof patch.width === "number"
-        ? clamp(patch.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH)
+        ? clamp(patch.width, TEXT_BOX_MIN_WIDTH, maxWidth)
         : box.width,
     fontSize:
       typeof patch.fontSize === "number"

@@ -32,7 +32,6 @@ import {
   FONT_OPTIONS as CORE_FONT_OPTIONS,
   TEXT_BOX_FONT_SIZE_MAX as CORE_TEXT_BOX_FONT_SIZE_MAX,
   TEXT_BOX_FONT_SIZE_MIN as CORE_TEXT_BOX_FONT_SIZE_MIN,
-  TEXT_BOX_MAX_WIDTH as CORE_TEXT_BOX_MAX_WIDTH,
   TEXT_BOX_MIN_WIDTH as CORE_TEXT_BOX_MIN_WIDTH,
   cloneCanvasState as cloneCanvasStateCore,
   cloneProjectDesignState as cloneProjectDesignStateCore,
@@ -44,6 +43,8 @@ import {
   getCanvasDimensionsFromState as getCanvasDimensionsFromStateCore,
   getCanvasPresetById as getCanvasPresetByIdCore,
   getFontFamily as getFontFamilyCore,
+  getTextBoxMaxWidthForCanvasWidth as getTextBoxMaxWidthForCanvasWidthCore,
+  getTextBoxMaxWidthForPresetId as getTextBoxMaxWidthForPresetIdCore,
   getPhoneBaseMetrics as getPhoneBaseMetricsCore,
   sanitizeFileNameSegment as sanitizeFileNameSegmentCore,
   sanitizeProjectState as sanitizeProjectStateCore,
@@ -249,7 +250,6 @@ const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
 const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
 const TEXT_BOX_MIN_WIDTH = CORE_TEXT_BOX_MIN_WIDTH;
-const TEXT_BOX_MAX_WIDTH = CORE_TEXT_BOX_MAX_WIDTH;
 const TEXT_BOX_FONT_SIZE_MIN = CORE_TEXT_BOX_FONT_SIZE_MIN;
 const TEXT_BOX_FONT_SIZE_MAX = CORE_TEXT_BOX_FONT_SIZE_MAX;
 const PHONE_SCALE_PERCENT_MIN = 50;
@@ -327,6 +327,14 @@ function getCanvasPresetById(id: string) {
 
 function getCanvasDimensionsFromState(state: CanvasDesignState) {
   return getCanvasDimensionsFromStateCore(state);
+}
+
+function getTextBoxMaxWidthForCanvasWidth(canvasWidth: number) {
+  return getTextBoxMaxWidthForCanvasWidthCore(canvasWidth);
+}
+
+function getTextBoxMaxWidthForPresetId(presetId: string) {
+  return getTextBoxMaxWidthForPresetIdCore(presetId);
 }
 
 function getCanvasThumbnailHeight(width: number, height: number) {
@@ -747,10 +755,10 @@ function getFirstMediaFile(files: FileList | null) {
   return null;
 }
 
-function measureTextBoxBounds(box: TextBoxModel): Rect {
+function measureTextBoxBounds(box: TextBoxModel, maxTextBoxWidth: number): Rect {
   const fontFamily = getFontFamily(box.fontKey);
   const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
-  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, maxTextBoxWidth);
   const lineHeight = fontSize * 1.2;
 
   if (typeof document === 'undefined') {
@@ -786,6 +794,7 @@ function measureTextBoxBounds(box: TextBoxModel): Rect {
 
 function centerCanvasElements(state: CanvasDesignState): CanvasDesignState {
   const canvasSize = getCanvasDimensionsFromState(state);
+  const maxTextBoxWidth = getTextBoxMaxWidthForCanvasWidth(canvasSize.width);
   const basePhone = getPhoneBaseMetrics(canvasSize.width, canvasSize.height, state.phoneScale);
   const targetPhoneX = (canvasSize.width - basePhone.width) / 2;
 
@@ -796,7 +805,7 @@ function centerCanvasElements(state: CanvasDesignState): CanvasDesignState {
       y: state.phoneOffset.y,
     },
     textBoxes: state.textBoxes.map((box) => {
-      const boxBounds = measureTextBoxBounds(box);
+      const boxBounds = measureTextBoxBounds(box, maxTextBoxWidth);
       return {
         ...box,
         x: (canvasSize.width - boxBounds.width) / 2,
@@ -806,7 +815,10 @@ function centerCanvasElements(state: CanvasDesignState): CanvasDesignState {
   };
 }
 
-function computeSingleLineMinWidthByCanvas(box: Pick<TextBoxModel, 'text' | 'fontSize' | 'fontKey'>): number {
+function computeSingleLineMinWidthByCanvas(
+  box: Pick<TextBoxModel, 'text' | 'fontSize' | 'fontKey'>,
+  maxTextBoxWidth: number,
+): number {
   if (typeof document === 'undefined') {
     return TEXT_BOX_MIN_WIDTH;
   }
@@ -827,7 +839,7 @@ function computeSingleLineMinWidthByCanvas(box: Pick<TextBoxModel, 'text' | 'fon
 
   ctx.font = `800 ${fontSize}px ${fontFamily}`;
   const measured = ctx.measureText(textForSingleLine).width;
-  return clamp(Math.ceil(measured + 1), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  return clamp(Math.ceil(measured + 1), TEXT_BOX_MIN_WIDTH, maxTextBoxWidth);
 }
 
 type DomTextMeasureContext = {
@@ -873,7 +885,10 @@ function getDomTextMeasureContext(): DomTextMeasureContext | null {
   return domTextMeasureContext;
 }
 
-function measureTextMetricsByDom(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+function measureTextMetricsByDom(
+  box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>,
+  maxTextBoxWidth: number,
+): {
   lineCount: number;
   textWidth: number;
 } | null {
@@ -883,7 +898,7 @@ function measureTextMetricsByDom(box: Pick<TextBoxModel, 'text' | 'width' | 'fon
   }
 
   const { host, textNode, range } = context;
-  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, maxTextBoxWidth);
   const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
   const fontFamily = getFontFamily(box.fontKey);
 
@@ -921,7 +936,10 @@ function measureTextMetricsByDom(box: Pick<TextBoxModel, 'text' | 'width' | 'fon
   };
 }
 
-function measureTextMetricsByCanvas(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+function measureTextMetricsByCanvas(
+  box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>,
+  maxTextBoxWidth: number,
+): {
   lineCount: number;
   textWidth: number;
 } {
@@ -937,21 +955,24 @@ function measureTextMetricsByCanvas(box: Pick<TextBoxModel, 'text' | 'width' | '
 
   const fontFamily = getFontFamily(box.fontKey);
   const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
-  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, maxTextBoxWidth);
   ctx.font = `800 ${fontSize}px ${fontFamily}`;
   const lines = wrapTextToLines(ctx, box.text, width);
   const textWidth = lines.reduce((sum, line) => sum + ctx.measureText(line).width, 0);
   return { lineCount: lines.length, textWidth };
 }
 
-function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+function measureTextMetrics(
+  box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>,
+  maxTextBoxWidth: number,
+): {
   lineCountByCanvas: number;
   lineCountByDom: number | null;
   textWidthByCanvas: number;
   textWidthByDom: number | null;
 } {
-  const canvasMeasured = measureTextMetricsByCanvas(box);
-  const domMeasured = measureTextMetricsByDom(box);
+  const canvasMeasured = measureTextMetricsByCanvas(box, maxTextBoxWidth);
+  const domMeasured = measureTextMetricsByDom(box, maxTextBoxWidth);
   return {
     lineCountByCanvas: canvasMeasured.lineCount,
     textWidthByCanvas: canvasMeasured.textWidth,
@@ -1106,6 +1127,7 @@ function getFontFamily(fontKey: FontKey) {
 
 function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOptions): LayoutMetrics {
   const { width, height, phoneOffset, phoneScale, textBoxes } = options;
+  const maxTextBoxWidth = getTextBoxMaxWidthForCanvasWidth(width);
 
   const basePhone = getPhoneBaseMetrics(width, height, phoneScale);
   const scaledPhoneWidth = basePhone.width;
@@ -1122,7 +1144,7 @@ function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOption
   const textBoxLayouts: TextBoxLayout[] = textBoxes.map((box) => {
     const fontFamily = getFontFamily(box.fontKey);
     const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
-    const widthValue = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+    const widthValue = clamp(box.width, TEXT_BOX_MIN_WIDTH, maxTextBoxWidth);
     const lineHeight = fontSize * 1.2;
 
     ctx.save();
@@ -1588,8 +1610,11 @@ function App() {
   );
 
   const selectedTextBoxBounds = useMemo(
-    () => (selectedTextBox ? measureTextBoxBounds(selectedTextBox) : null),
-    [selectedTextBox],
+    () =>
+      selectedTextBox
+        ? measureTextBoxBounds(selectedTextBox, getTextBoxMaxWidthForPresetId(canvasPresetId))
+        : null,
+    [canvasPresetId, selectedTextBox],
   );
 
   const inlineTextEditorLayout = useMemo(() => {
@@ -1669,6 +1694,10 @@ function App() {
   );
 
   const currentCanvasPreset = useMemo(() => getCanvasPresetById(canvasPresetId), [canvasPresetId]);
+  const currentTextBoxMaxWidth = useMemo(
+    () => getTextBoxMaxWidthForPresetId(canvasPresetId),
+    [canvasPresetId],
+  );
 
   const currentProjectState = useMemo<ProjectDesignState | null>(() => {
     if (!currentProject) {
@@ -2701,7 +2730,7 @@ function App() {
     const id = `text-${nextTextBoxIdRef.current}`;
     nextTextBoxIdRef.current += 1;
 
-    const width = 460;
+    const width = clamp(460, TEXT_BOX_MIN_WIDTH, currentTextBoxMaxWidth);
     const newBox: TextBoxModel = {
       id,
       text: '텍스트를 입력하세요',
@@ -2718,7 +2747,7 @@ function App() {
     setIsPlacingTextBox(false);
     setStatusMessage('새 텍스트박스를 추가했습니다. 드래그로 위치를 조정하세요.');
     setErrorMessage('');
-  }, []);
+  }, [currentTextBoxMaxWidth]);
 
   const updateSelectedTextBox = useCallback((updater: (box: TextBoxModel) => TextBoxModel) => {
     setTextBoxes((previous) =>
@@ -2732,7 +2761,7 @@ function App() {
           next.fontSize !== box.fontSize ||
           next.fontKey !== box.fontKey;
         if (!contentChanged) return next;
-        const measured = measureTextMetrics(next);
+        const measured = measureTextMetrics(next, currentTextBoxMaxWidth);
         return {
           ...next,
           measuredLineCountByCanvas: measured.lineCountByCanvas,
@@ -2742,7 +2771,7 @@ function App() {
         };
       }),
     );
-  }, [selectedTextBoxId]);
+  }, [currentTextBoxMaxWidth, selectedTextBoxId]);
 
   const handleSelectedTextBoxFontSizeChange = useCallback(
     (value: number) => {
@@ -2765,13 +2794,13 @@ function App() {
         return;
       }
 
-      const nextWidth = clamp(value, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+      const nextWidth = clamp(value, TEXT_BOX_MIN_WIDTH, currentTextBoxMaxWidth);
       updateSelectedTextBox((box) => ({
         ...box,
         width: nextWidth,
       }));
     },
-    [updateSelectedTextBox],
+    [currentTextBoxMaxWidth, updateSelectedTextBox],
   );
 
   const handlePhoneScalePercentChange = useCallback((value: number) => {
@@ -2809,6 +2838,7 @@ function App() {
       id,
       x: source.x + 24,
       y: source.y + 24,
+      width: clamp(source.width, TEXT_BOX_MIN_WIDTH, currentTextBoxMaxWidth),
     };
 
     setTextBoxes((previous) => [...previous, duplicated]);
@@ -2817,7 +2847,7 @@ function App() {
     setStatusMessage('텍스트박스를 붙여넣었습니다.');
     setErrorMessage('');
     return true;
-  }, []);
+  }, [currentTextBoxMaxWidth]);
 
   const copyCurrentCanvasToClipboard = useCallback(async () => {
     if (!currentProject || !currentProjectState) {
@@ -4422,12 +4452,12 @@ function App() {
         }
 
         if (session.target === 'text-box-resize' && session.textBoxId && session.startTextBoxSize) {
-          const nextWidth = clamp(session.startTextBoxSize.width + dx, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+          const nextWidth = clamp(session.startTextBoxSize.width + dx, TEXT_BOX_MIN_WIDTH, currentTextBoxMaxWidth);
           setTextBoxes((previous) =>
             previous.map((box) => {
               if (box.id !== session.textBoxId) return box;
               const next = { ...box, width: nextWidth };
-              const measured = measureTextMetrics(next);
+              const measured = measureTextMetrics(next, currentTextBoxMaxWidth);
               return {
                 ...next,
                 measuredLineCountByCanvas: measured.lineCountByCanvas,
@@ -4474,6 +4504,7 @@ function App() {
     [
       currentCanvasPreset.height,
       currentCanvasPreset.width,
+      currentTextBoxMaxWidth,
       findTopmostTextBoxAtPoint,
       getCanvasSnapThreshold,
       isPlacingTextBox,
@@ -4595,6 +4626,7 @@ function App() {
       const scaleX = nextPreset.width / previousPreset.width;
       const scaleY = nextPreset.height / previousPreset.height;
       const scaleFont = Math.sqrt(scaleX * scaleY);
+      const nextPresetMaxTextBoxWidth = getTextBoxMaxWidthForPresetId(nextPreset.id);
 
       setCanvasPresetId(nextPreset.id);
       setPhoneOffset((previous) => ({
@@ -4606,7 +4638,7 @@ function App() {
           ...box,
           x: box.x * scaleX,
           y: box.y * scaleY,
-          width: clamp(box.width * scaleX, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH),
+          width: clamp(box.width * scaleX, TEXT_BOX_MIN_WIDTH, nextPresetMaxTextBoxWidth),
           fontSize: clamp(box.fontSize * scaleFont, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
         })),
       );
@@ -4732,12 +4764,13 @@ function App() {
   }, [currentCanvasId, currentProjectId, currentProjectState, markProjectSyncable, projects]);
 
   const shrinkCanvasTextBoxesToSingleLine = useCallback((state: CanvasDesignState): CanvasDesignState => {
+    const maxTextBoxWidth = getTextBoxMaxWidthForPresetId(state.canvasPresetId);
     return {
       ...state,
       textBoxes: state.textBoxes.map((box) => {
-        const nextWidth = computeSingleLineMinWidthByCanvas(box);
+        const nextWidth = computeSingleLineMinWidthByCanvas(box, maxTextBoxWidth);
         const nextBox = nextWidth === box.width ? box : { ...box, width: nextWidth };
-        const measured = measureTextMetrics(nextBox);
+        const measured = measureTextMetrics(nextBox, maxTextBoxWidth);
         return {
           ...nextBox,
           measuredLineCountByCanvas: measured.lineCountByCanvas,
@@ -5144,8 +5177,9 @@ function App() {
           );
 
           for (const canvas of sourceState.canvases) {
+            const maxTextBoxWidth = getTextBoxMaxWidthForPresetId(canvas.state.canvasPresetId);
             const updates = canvas.state.textBoxes.map((box) => {
-              const measured = measureTextMetrics(box);
+              const measured = measureTextMetrics(box, maxTextBoxWidth);
               return {
                 id: box.id,
                 measuredLineCountByCanvas: measured.lineCountByCanvas,
@@ -6016,7 +6050,7 @@ function App() {
                         <input
                           type="range"
                           min={TEXT_BOX_MIN_WIDTH}
-                          max={TEXT_BOX_MAX_WIDTH}
+                          max={currentTextBoxMaxWidth}
                           value={selectedTextBox.width}
                           onChange={(event) => handleSelectedTextBoxWidthChange(Number(event.target.value))}
                           className="w-full"
@@ -6024,7 +6058,7 @@ function App() {
                         <Input
                           type="number"
                           min={TEXT_BOX_MIN_WIDTH}
-                          max={TEXT_BOX_MAX_WIDTH}
+                          max={currentTextBoxMaxWidth}
                           step={1}
                           value={Math.round(selectedTextBox.width)}
                           onChange={(event) => {
@@ -6254,7 +6288,7 @@ function App() {
                           <input
                             type="range"
                             min={TEXT_BOX_MIN_WIDTH}
-                            max={TEXT_BOX_MAX_WIDTH}
+                            max={currentTextBoxMaxWidth}
                             value={selectedTextBox.width}
                             onChange={(event) => handleSelectedTextBoxWidthChange(Number(event.target.value))}
                             className="w-full"
@@ -6262,7 +6296,7 @@ function App() {
                           <Input
                             type="number"
                             min={TEXT_BOX_MIN_WIDTH}
-                            max={TEXT_BOX_MAX_WIDTH}
+                            max={currentTextBoxMaxWidth}
                             step={1}
                             value={Math.round(selectedTextBox.width)}
                             onChange={(event) => {

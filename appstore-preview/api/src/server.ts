@@ -13,6 +13,7 @@ import {
   DEFAULT_CANVAS_PRESET,
   findCanvas,
   findTextBox,
+  getTextBoxMaxWidthForPresetId,
   normalizeProjectRecord,
   patchTextBox,
   sanitizeProjectState,
@@ -381,8 +382,11 @@ function patchProjectTextBox(
 ) {
   const canvas = resolveCanvasOrThrow(project, canvasId);
   resolveTextBoxOrThrow(canvas, textBoxId);
+  const maxTextBoxWidth = getTextBoxMaxWidthForPresetId(canvas.state.canvasPresetId);
 
-  canvas.state.textBoxes = canvas.state.textBoxes.map((box) => (box.id === textBoxId ? patchTextBox(box, patch) : box));
+  canvas.state.textBoxes = canvas.state.textBoxes.map((box) =>
+    box.id === textBoxId ? patchTextBox(box, patch, maxTextBoxWidth) : box,
+  );
   project.updatedAt = new Date().toISOString();
 }
 

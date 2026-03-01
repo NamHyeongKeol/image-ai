@@ -166,7 +166,7 @@ Notes:
 - Text box measured fields are split by engine:
   - `measuredLineCountByCanvas`, `measuredTextWidthByCanvas`
   - `measuredLineCountByDom`, `measuredTextWidthByDom`
-- Text box limits: `width 120..1200`, `fontSize 18..160` (API에서 범위 밖 값은 clamp).
+- Text box limits: `width 120..round(canvasWidth*0.93)`, `fontSize 18..160` (API에서 범위 밖 값은 clamp).
 - Shape metadata includes background, phone frame, and all text boxes.
 - ZIP export contains project/canvas JSON + i18n text map + preview PNG (media binaries are referenced, not embedded).
 - API responses now include project `revision` for optimistic concurrency.

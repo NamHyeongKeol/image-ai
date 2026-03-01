@@ -73,7 +73,7 @@ Main endpoints:
   - Measurement fields are also patchable:
     - `measuredLineCountByCanvas`, `measuredLineCountByDom`
     - `measuredTextWidthByCanvas`, `measuredTextWidthByDom`
-  - Limits: `width` is clamped to `120..1200`, `fontSize` is clamped to `18..160`
+  - Limits: `width` is clamped to `120..round(canvasWidth*0.93)`, `fontSize` is clamped to `18..160`
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/position`
   - Move one text box position only (`x`, `y`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
@@ -98,7 +98,7 @@ Notes:
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
 - `POST /api/projects/import` for an existing project should include `expectedRevision`.
   - If stale, API returns `409` with `code: "revision_conflict"` and `expectedRevision` / `actualRevision`.
-- Text box constraints (API + GUI shared): `width 120..1200`, `fontSize 18..160`.
+- Text box constraints (API + GUI shared): `width 120..round(canvasWidth*0.93)`, `fontSize 18..160`.
 - Measurement values are stored in both engines:
   - `*ByCanvas`: canvas-wrap/canvas-measure based
   - `*ByDom`: browser DOM layout based
