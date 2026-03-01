@@ -3120,6 +3120,29 @@ function App() {
           }
         }
 
+        if (summaries.length === 0) {
+          throw new Error('No projects available from API storage.');
+        }
+
+        const sortedSummaries = [...summaries].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+        const preferredSummaryId =
+          sortedSummaries.find((project) => project.id === legacyStore.currentProjectId)?.id ?? sortedSummaries[0].id;
+        const summaryProjects = sortedSummaries.map((summary) => ({
+          id: summary.id,
+          name: summary.name,
+          updatedAt: summary.updatedAt,
+          state: createProjectDesignState(),
+        }));
+        const summaryPreferredProject = summaryProjects.find((project) => project.id === preferredSummaryId) ?? summaryProjects[0];
+        const summaryPreferredCanvasId = summaryPreferredProject?.state.currentCanvasId ?? '';
+
+        loadedProjectIdRef.current = null;
+        setProjects(summaryProjects);
+        setCurrentProjectId(summaryPreferredProject.id);
+        setCurrentCanvasId(summaryPreferredCanvasId);
+        setStatusMessage(`${summaryProjects.length}개 API 프로젝트를 불러오는 중입니다...`);
+        setErrorMessage('');
+
         const detailedProjects = await Promise.all(
           summaries.map(async (summary) => {
             try {
@@ -3150,12 +3173,9 @@ function App() {
           }),
         );
 
-        const detailById = new Map(
-          detailedProjects
-            .filter((project): project is ProjectRecord => Boolean(project))
-            .map((project) => [project.id, project]),
-        );
-        const normalizedFetched = summaries.map((summary) => {
+        const normalizedDetailed = detailedProjects.filter((project): project is ProjectRecord => Boolean(project));
+        const detailById = new Map(normalizedDetailed.map((project) => [project.id, project]));
+        const mergedProjects = sortedSummaries.map((summary) => {
           const detailed = detailById.get(summary.id);
           if (detailed) {
             return detailed;
@@ -3173,25 +3193,22 @@ function App() {
           return;
         }
 
-        if (normalizedFetched.length === 0) {
-          throw new Error('No projects available from API storage.');
+        if (normalizedDetailed.length === 0) {
+          throw new Error('API detail hydration failed.');
         }
 
-        const sortedProjects = [...normalizedFetched].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-        const preferredProjectId =
-          sortedProjects.find((project) => project.id === legacyStore.currentProjectId)?.id ?? sortedProjects[0].id;
-        const preferredProject = sortedProjects.find((project) => project.id === preferredProjectId) ?? sortedProjects[0];
+        const preferredProject = mergedProjects.find((project) => project.id === preferredSummaryId) ?? mergedProjects[0];
         const preferredCanvasId =
           preferredProject.state.canvases.find((canvas) => canvas.id === preferredProject.state.currentCanvasId)?.id ??
           preferredProject.state.canvases[0]?.id ??
           '';
 
         loadedProjectIdRef.current = null;
-        setProjects(sortedProjects);
+        setProjects(mergedProjects);
         setCurrentProjectId(preferredProject.id);
         setCurrentCanvasId(preferredCanvasId);
 
-        setStatusMessage(`${sortedProjects.length}개 API 프로젝트를 불러왔습니다.`);
+        setStatusMessage(`${mergedProjects.length}개 API 프로젝트를 불러왔습니다.`);
         setErrorMessage('');
         hydrationSucceeded = true;
       } catch {
