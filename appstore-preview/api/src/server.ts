@@ -23,6 +23,7 @@ import {
   APPSTORE_PREVIEW_ROOT,
   deleteProjectById,
   ProjectNotFoundError,
+  ProjectRevisionConflictError,
   createProject,
   getProjectOrNull,
   getProjectOrThrow,
@@ -98,6 +99,7 @@ function toProjectSummary(project: StoredProjectRecord) {
     id: project.id,
     name: project.name,
     updatedAt: project.updatedAt,
+    revision: project.revision,
     canvasCount: project.state.canvases.length,
     currentCanvasId: project.state.currentCanvasId,
     source: project.source,
@@ -348,6 +350,7 @@ function cloneAsEditableProject(project: StoredProjectRecord): StoredProjectReco
     source: 'api',
     sourcePath: '',
     updatedAt: new Date().toISOString(),
+    revision: project.revision,
     state: cloneProjectDesignState(project.state),
   };
 }
@@ -471,6 +474,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     const filePath = typeof body.filePath === 'string' ? body.filePath : null;
     const nameOverride = typeof body.name === 'string' ? body.name.trim() : '';
     const forceImport = body.force === true;
+    const expectedRevisionRaw = readNumber(body.expectedRevision);
+    const expectedRevision =
+      expectedRevisionRaw === null ? null : Math.max(0, Math.floor(expectedRevisionRaw));
 
     let imported: StoredProjectRecord;
     if (payload) {
@@ -490,10 +496,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       editable.name = nameOverride;
     }
 
+    const existingProject = await getProjectOrNull(editable.id);
     if (!forceImport) {
-      const existing = await getProjectOrNull(editable.id);
-      if (existing) {
-        const existingStats = computeProjectStateStats(existing.state);
+      if (existingProject && expectedRevision === null) {
+        throw new HttpError(
+          409,
+          'Import blocked because expectedRevision is required for existing projects. Read the latest revision first.',
+        );
+      }
+
+      if (existingProject) {
+        const existingStats = computeProjectStateStats(existingProject.state);
         const existingHasMeaningfulContent =
           existingStats.canvasCount > 1 || existingStats.textBoxCount > 0 || existingStats.mediaCount > 0;
 
@@ -506,7 +519,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       }
     }
 
-    const persisted = await saveProject(editable);
+    const persisted = await saveProject(editable, {
+      expectedRevision: existingProject ? expectedRevision : null,
+    });
     sendJson(response, 201, {
       imported: true,
       project: toProjectSummary(persisted),
@@ -667,7 +682,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     editable.updatedAt = new Date().toISOString();
-    const persisted = await saveProject(editable);
+    const persisted = await saveProject(editable, { expectedRevision: project.revision });
     const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
 
     sendJson(response, 200, {
@@ -713,7 +728,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     editableTargetProject.updatedAt = new Date().toISOString();
 
-    const persistedTargetProject = await saveProject(editableTargetProject);
+    const persistedTargetProject = await saveProject(editableTargetProject, {
+      expectedRevision: targetProjectSource.revision,
+    });
     const mediaCloneResult = await cloneCanvasMedia({
       sourceProjectId: project.id,
       sourceCanvasId: canvas.id,
@@ -788,7 +805,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         name: mediaName,
       };
       editable.updatedAt = new Date().toISOString();
-      const persisted = await saveProject(editable);
+      const persisted = await saveProject(editable, { expectedRevision: project.revision });
 
       sendJson(response, 200, {
         project: toProjectSummary(persisted),
@@ -806,7 +823,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         name: '',
       };
       editable.updatedAt = new Date().toISOString();
-      const persisted = await saveProject(editable);
+      const persisted = await saveProject(editable, { expectedRevision: project.revision });
       await deleteCanvasMedia(project.id, canvasId);
 
       sendJson(response, 200, {
@@ -855,7 +872,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         throw new HttpError(400, 'No text boxes were updated.');
       }
 
-      const persisted = await saveProject(editable);
+      const persisted = await saveProject(editable, { expectedRevision: project.revision });
       const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
       const canvasMeta = computeCanvasMeta(nextCanvas);
       sendJson(response, 200, {
@@ -883,7 +900,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           ...(x !== null ? { x } : {}),
           ...(y !== null ? { y } : {}),
         });
-        const persisted = await saveProject(editable);
+        const persisted = await saveProject(editable, { expectedRevision: project.revision });
         const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
         const textBoxMeta = computeCanvasMeta(nextCanvas).textBoxes.find((item) => item.id === textBoxId) ?? null;
 
@@ -900,7 +917,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         const body = await readJsonBody(request);
         const editable = cloneAsEditableProject(project);
         patchProjectTextBox(editable, canvasId, textBoxId, body as Partial<TextBoxModel>);
-        const persisted = await saveProject(editable);
+        const persisted = await saveProject(editable, { expectedRevision: project.revision });
         const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
         const textBoxMeta = computeCanvasMeta(nextCanvas).textBoxes.find((item) => item.id === textBoxId) ?? null;
 
@@ -930,11 +947,31 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   notFound();
 }
 
-function toErrorPayload(error: unknown) {
+interface ErrorPayload {
+  status: number;
+  message: string;
+  code?: string;
+  projectId?: string;
+  expectedRevision?: number;
+  actualRevision?: number;
+}
+
+function toErrorPayload(error: unknown): ErrorPayload {
   if (error instanceof HttpError) {
     return {
       status: error.status,
       message: error.message,
+    };
+  }
+
+  if (error instanceof ProjectRevisionConflictError) {
+    return {
+      status: 409,
+      code: 'revision_conflict',
+      projectId: error.projectId,
+      expectedRevision: error.expectedRevision,
+      actualRevision: error.actualRevision,
+      message: 'Project was changed elsewhere. Refresh to sync latest state before retrying.',
     };
   }
 
@@ -965,7 +1002,13 @@ const server = createServer(async (request, response) => {
     await handleRequest(request, response);
   } catch (error) {
     const payload = toErrorPayload(error);
-    sendJson(response, payload.status, { error: payload.message });
+    sendJson(response, payload.status, {
+      error: payload.message,
+      ...(payload.code ? { code: payload.code } : {}),
+      ...(payload.projectId ? { projectId: payload.projectId } : {}),
+      ...(typeof payload.expectedRevision === 'number' ? { expectedRevision: payload.expectedRevision } : {}),
+      ...(typeof payload.actualRevision === 'number' ? { actualRevision: payload.actualRevision } : {}),
+    });
   }
 });
 

@@ -27,18 +27,37 @@ export class ProjectNotFoundError extends Error {
   }
 }
 
+export class ProjectRevisionConflictError extends Error {
+  projectId: string;
+  expectedRevision: number;
+  actualRevision: number;
+
+  constructor(projectId: string, expectedRevision: number, actualRevision: number) {
+    super(`Project revision conflict: ${projectId} (expected ${expectedRevision}, actual ${actualRevision})`);
+    this.name = 'ProjectRevisionConflictError';
+    this.projectId = projectId;
+    this.expectedRevision = expectedRevision;
+    this.actualRevision = actualRevision;
+  }
+}
+
 interface ProjectFilePayload {
   version: number;
   project: {
     id: string;
     name: string;
     updatedAt: string;
+    revision?: number;
   };
   canvas: {
     width: number;
     height: number;
   };
   state: ProjectDesignState;
+}
+
+interface SaveProjectOptions {
+  expectedRevision?: number | null;
 }
 
 async function ensureDirectories() {
@@ -120,7 +139,7 @@ function mergeProjectsByLatest(projects: StoredProjectRecord[]) {
 
     const existingTs = parseIsoTimestamp(existing.updatedAt);
     const nextTs = parseIsoTimestamp(project.updatedAt);
-    if (nextTs >= existingTs) {
+    if (nextTs > existingTs || (nextTs === existingTs && project.revision >= existing.revision)) {
       byId.set(project.id, project);
     }
   }
@@ -159,22 +178,49 @@ async function findExistingProjectPath(projectId: string) {
   return existing?.sourcePath ?? null;
 }
 
-export async function saveProject(project: StoredProjectRecord) {
+function normalizeRevision(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function hasStateChanged(left: ProjectDesignState, right: ProjectDesignState) {
+  return JSON.stringify(left) !== JSON.stringify(right);
+}
+
+export async function saveProject(project: StoredProjectRecord, options?: SaveProjectOptions) {
   await ensureDirectories();
 
   const persistedState = cloneProjectDesignState(project.state);
+  const existingRecord = await getProjectOrNull(project.id);
+  const existingRevision = existingRecord?.revision ?? 0;
+  const expectedRevision = normalizeRevision(options?.expectedRevision);
+
+  if (existingRecord && expectedRevision !== null && expectedRevision !== existingRevision) {
+    throw new ProjectRevisionConflictError(project.id, expectedRevision, existingRevision);
+  }
+
+  const nameChanged = existingRecord ? existingRecord.name !== project.name : true;
+  const stateChanged = existingRecord ? hasStateChanged(existingRecord.state, persistedState) : true;
+  const hasMeaningfulChange = nameChanged || stateChanged;
+  const nextRevision = existingRecord ? (hasMeaningfulChange ? existingRevision + 1 : existingRevision) : 0;
+
   const activeCanvas =
     persistedState.canvases.find((canvas) => canvas.id === persistedState.currentCanvasId) ??
     persistedState.canvases[0];
   const activePreset = getCanvasPresetById(activeCanvas?.state.canvasPresetId ?? '886x1920');
 
-  const updatedAt = project.updatedAt || new Date().toISOString();
+  const updatedAt = hasMeaningfulChange
+    ? project.updatedAt || new Date().toISOString()
+    : existingRecord?.updatedAt || project.updatedAt || new Date().toISOString();
   const payload: ProjectFilePayload = {
-    version: 2,
+    version: 3,
     project: {
       id: project.id,
       name: project.name,
       updatedAt,
+      revision: nextRevision,
     },
     canvas: {
       width: activePreset.width,
@@ -183,7 +229,7 @@ export async function saveProject(project: StoredProjectRecord) {
     state: persistedState,
   };
 
-  const existingPath = await findExistingProjectPath(project.id);
+  const existingPath = existingRecord?.sourcePath ?? (await findExistingProjectPath(project.id));
   const legacyPath =
     existingPath && path.resolve(existingPath).startsWith(path.resolve(LEGACY_API_PROJECTS_DIR))
       ? existingPath
@@ -193,8 +239,11 @@ export async function saveProject(project: StoredProjectRecord) {
     existingPath && !legacyPath && path.resolve(existingPath) !== path.resolve(targetPath)
       ? existingPath
       : null;
+  const shouldWriteProjectFile = hasMeaningfulChange || Boolean(legacyPath) || Boolean(staleUnifiedPath) || !existingPath;
 
-  await writeFile(targetPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  if (shouldWriteProjectFile) {
+    await writeFile(targetPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  }
 
   if (legacyPath) {
     await rm(legacyPath, { force: true });
@@ -209,6 +258,7 @@ export async function saveProject(project: StoredProjectRecord) {
     source: 'api' as const,
     sourcePath: targetPath,
     updatedAt,
+    revision: nextRevision,
     state: persistedState,
   };
 }

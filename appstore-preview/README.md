@@ -38,9 +38,9 @@ Main endpoints:
 - `GET /api/projects`
   - List all projects visible to the API (`.project-saves/*.appstore-preview-project.json`)
 - `GET /api/projects/:projectId`
-  - Read one project (`project` summary + `state`)
+  - Read one project (`project` summary with `revision` + `state`)
 - `GET /api/projects/full`
-  - Full read dump for all local projects (`state` + `metas` + `rawFile`)
+  - Full read dump for all local projects (`state` + `metas` + `rawFile`, each with `revision`)
 - `POST /api/projects/:projectId/clone`
   - Clone an existing project (includes canvas media binaries stored by API)
 - `POST /api/projects/:projectId/canvases/:canvasId/clone`
@@ -78,6 +78,8 @@ Notes:
 - ZIP export includes media references but does not embed original media binaries.
 - API media binaries are stored under `.project-saves/media/<projectId>/<canvasId>/`.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
+- `POST /api/projects/import` for an existing project should include `expectedRevision`.
+  - If stale, API returns `409` with `code: "revision_conflict"` and `expectedRevision` / `actualRevision`.
 - When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs project changes back to API.
 - Project SoT is the API file storage (`.project-saves/*.appstore-preview-project.json`) for both GUI and API reads/writes.
 - Legacy browser `localStorage` project data is used only for one-time migration to API storage, then no longer used as runtime state.

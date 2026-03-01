@@ -168,6 +168,7 @@ interface ProjectRecord {
   id: string;
   name: string;
   updatedAt: string;
+  revision: number;
   state: ProjectDesignState;
 }
 
@@ -177,6 +178,7 @@ interface ProjectFilePayload {
     id: string;
     name: string;
     updatedAt: string;
+    revision?: number;
   };
   canvas: {
     width: number;
@@ -294,6 +296,7 @@ interface ApiProjectSummaryPayload {
   id: string;
   name: string;
   updatedAt: string;
+  revision?: number;
   canvasCount: number;
   currentCanvasId: string;
   source: string;
@@ -309,6 +312,7 @@ interface ApiProjectDetailPayload {
     id: string;
     name: string;
     updatedAt: string;
+    revision?: number;
   };
   state?: unknown;
 }
@@ -390,6 +394,7 @@ function createProjectRecord(name: string, state: ProjectDesignState = createPro
     id: createProjectId(),
     name,
     updatedAt: new Date().toISOString(),
+    revision: 0,
     state: {
       currentCanvasId: state.currentCanvasId,
       canvases: state.canvases.map((canvas) => ({
@@ -503,7 +508,7 @@ function parseStoredProjects(raw: string | null) {
 
     return parsed
       .filter(
-        (item): item is { id?: unknown; name?: unknown; updatedAt?: unknown; state?: unknown } =>
+        (item): item is { id?: unknown; name?: unknown; updatedAt?: unknown; revision?: unknown; state?: unknown } =>
           Boolean(item && typeof item === 'object'),
       )
       .map((item) => {
@@ -511,10 +516,16 @@ function parseStoredProjects(raw: string | null) {
           return null;
         }
 
+        const revision =
+          typeof item.revision === 'number' && Number.isFinite(item.revision)
+            ? Math.max(0, Math.floor(item.revision))
+            : 0;
+
         return {
           id: item.id,
           name: item.name,
           updatedAt: item.updatedAt,
+          revision,
           state: sanitizeProjectState(item.state),
         } satisfies ProjectRecord;
       })
@@ -1913,6 +1924,7 @@ function App() {
         id: duplicatedProjectId,
         name: duplicatedProjectName,
         updatedAt: new Date().toISOString(),
+        revision: 0,
         state: duplicatedState,
       };
 
@@ -2446,6 +2458,7 @@ function App() {
           id: project.id,
           name: project.name,
           updatedAt: project.updatedAt,
+          revision: project.revision,
         },
         canvas: {
           width: activeCanvasPreset.width,
@@ -2718,11 +2731,13 @@ function App() {
     (snapshot: AppHistorySnapshot) => {
       isApplyingHistoryRef.current = true;
       const updatedAtByProjectId = new Map(projects.map((project) => [project.id, project.updatedAt]));
+      const revisionByProjectId = new Map(projects.map((project) => [project.id, project.revision]));
       const now = new Date().toISOString();
       const nextProjects: ProjectRecord[] = snapshot.projects.map((project) => ({
         id: project.id,
         name: project.name,
         updatedAt: updatedAtByProjectId.get(project.id) ?? now,
+        revision: revisionByProjectId.get(project.id) ?? 0,
         state: cloneProjectDesignState(project.state),
       }));
 
@@ -3283,6 +3298,10 @@ function App() {
                   id: createdProject.id,
                   name: createdProject.name,
                   updatedAt: createdProject.updatedAt,
+                  revision:
+                    typeof createdProject.revision === 'number' && Number.isFinite(createdProject.revision)
+                      ? Math.max(0, Math.floor(createdProject.revision))
+                      : 0,
                   canvasCount: 1,
                   currentCanvasId: sanitizeProjectState(createdPayload.state).currentCanvasId,
                   source: 'api',
@@ -3303,6 +3322,10 @@ function App() {
           id: summary.id,
           name: summary.name,
           updatedAt: summary.updatedAt,
+          revision:
+            typeof summary.revision === 'number' && Number.isFinite(summary.revision)
+              ? Math.max(0, Math.floor(summary.revision))
+              : 0,
           state: createProjectDesignState(),
         }));
         const summaryPreferredProject = summaryProjects.find((project) => project.id === preferredSummaryId) ?? summaryProjects[0];
@@ -3333,11 +3356,17 @@ function App() {
               const projectId = detailPayload.project?.id ?? summary.id;
               const projectName = detailPayload.project?.name ?? summary.name;
               const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
+              const revisionRaw = detailPayload.project?.revision ?? summary.revision;
+              const revision =
+                typeof revisionRaw === 'number' && Number.isFinite(revisionRaw)
+                  ? Math.max(0, Math.floor(revisionRaw))
+                  : 0;
 
               return {
                 id: projectId,
                 name: projectName,
                 updatedAt,
+                revision,
                 state: sanitizeProjectState(detailPayload.state),
               } satisfies ProjectRecord;
             } catch {
@@ -3358,6 +3387,10 @@ function App() {
             id: summary.id,
             name: summary.name,
             updatedAt: summary.updatedAt,
+            revision:
+              typeof summary.revision === 'number' && Number.isFinite(summary.revision)
+                ? Math.max(0, Math.floor(summary.revision))
+                : 0,
             state: createProjectDesignState(),
           } satisfies ProjectRecord;
         });
@@ -3435,6 +3468,10 @@ function App() {
           id: detailPayload.project?.id ?? targetProjectId,
           name: detailPayload.project?.name ?? '프로젝트',
           updatedAt: detailPayload.project?.updatedAt ?? new Date().toISOString(),
+          revision:
+            typeof detailPayload.project?.revision === 'number' && Number.isFinite(detailPayload.project.revision)
+              ? Math.max(0, Math.floor(detailPayload.project.revision))
+              : 0,
           state: sanitizeProjectState(detailPayload.state),
         };
 
@@ -3476,6 +3513,7 @@ function App() {
             id: project.id,
             name: project.name,
             updatedAt: project.id === currentProjectId ? new Date().toISOString() : project.updatedAt,
+            revision: project.revision,
             state: cloneProjectDesignState(
               project.id === currentProjectId && isCurrentProjectDraftReady && currentProjectState
                 ? currentProjectState
@@ -3494,6 +3532,7 @@ function App() {
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
+                expectedRevision: project.revision,
                 payload: {
                   id: project.id,
                   name: project.name,
@@ -3503,42 +3542,99 @@ function App() {
               }),
             });
 
+            const responsePayload = (await response.json().catch(() => null)) as
+              | (ApiProjectDetailPayload & {
+                  error?: unknown;
+                  message?: unknown;
+                  code?: unknown;
+                  expectedRevision?: unknown;
+                  actualRevision?: unknown;
+                })
+              | null;
+
             if (response.ok) {
+              const nextRevisionRaw = responsePayload?.project?.revision;
+              const nextRevision =
+                typeof nextRevisionRaw === 'number' && Number.isFinite(nextRevisionRaw)
+                  ? Math.max(0, Math.floor(nextRevisionRaw))
+                  : project.revision;
               return {
                 ok: true as const,
                 projectId: project.id,
                 status: response.status,
+                revision: nextRevision,
               };
             }
 
             let message = '';
-            try {
-              const payload = (await response.json()) as { message?: unknown };
-              if (typeof payload.message === 'string') {
-                message = payload.message;
-              }
-            } catch {
-              message = '';
+            if (typeof responsePayload?.message === 'string') {
+              message = responsePayload.message;
+            } else if (typeof responsePayload?.error === 'string') {
+              message = responsePayload.error;
             }
+            const code = typeof responsePayload?.code === 'string' ? responsePayload.code : '';
+            const actualRevision =
+              typeof responsePayload?.actualRevision === 'number' && Number.isFinite(responsePayload.actualRevision)
+                ? Math.max(0, Math.floor(responsePayload.actualRevision))
+                : null;
 
             return {
               ok: false as const,
               projectId: project.id,
               status: response.status,
               message,
+              code,
+              actualRevision,
             };
           }),
         );
 
+        const successfulResponses = results
+          .filter(
+            (result): result is PromiseFulfilledResult<{ ok: true; projectId: string; status: number; revision: number }> =>
+              result.status === 'fulfilled' && result.value.ok,
+          )
+          .map((result) => result.value);
+        if (successfulResponses.length > 0) {
+          const revisionByProjectId = new Map(successfulResponses.map((result) => [result.projectId, result.revision]));
+          setProjects((previous) =>
+            previous.map((project) => {
+              const nextRevision = revisionByProjectId.get(project.id);
+              if (typeof nextRevision !== 'number' || project.revision === nextRevision) {
+                return project;
+              }
+              return {
+                ...project,
+                revision: nextRevision,
+              };
+            }),
+          );
+        }
+
         const hasRejected = results.some((result) => result.status === 'rejected');
         const failedResponses = results
-          .filter((result): result is PromiseFulfilledResult<{ ok: false; projectId: string; status: number; message: string }> =>
-            result.status === 'fulfilled' && !result.value.ok,
+          .filter(
+            (
+              result,
+            ): result is PromiseFulfilledResult<{
+              ok: false;
+              projectId: string;
+              status: number;
+              message: string;
+              code: string;
+              actualRevision: number | null;
+            }> => result.status === 'fulfilled' && !result.value.ok,
           )
           .map((result) => result.value);
 
         if (hasRejected || failedResponses.length > 0) {
-          const hasConflict = failedResponses.some((result) => result.status === 409);
+          const conflictedProjectIds = failedResponses
+            .filter((result) => result.status === 409)
+            .map((result) => result.projectId);
+          for (const conflictedProjectId of conflictedProjectIds) {
+            removeProjectFromSyncable(conflictedProjectId);
+          }
+          const hasConflict = conflictedProjectIds.length > 0;
           if (hasConflict) {
             setErrorMessage('데이터 보호를 위해 일부 프로젝트 동기화가 차단되었습니다. 새로고침 후 다시 확인해 주세요.');
           } else {
@@ -3551,7 +3647,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [currentProjectId, currentProjectState, projects]);
+  }, [currentProjectId, currentProjectState, projects, removeProjectFromSyncable]);
 
   useEffect(() => {
     if (!currentProjectState) {

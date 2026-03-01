@@ -80,6 +80,7 @@ export interface StoredProjectRecord {
   id: string;
   name: string;
   updatedAt: string;
+  revision: number;
   state: ProjectDesignState;
   source: 'api' | 'app-save';
   sourcePath: string;
@@ -91,6 +92,7 @@ export interface ProjectFilePayload {
     id: string;
     name: string;
     updatedAt: string;
+    revision?: number;
   };
   state: ProjectDesignState;
 }
@@ -192,6 +194,7 @@ export function createProjectRecord(name: string, state: ProjectDesignState = cr
     id: createProjectId(),
     name,
     updatedAt: new Date().toISOString(),
+    revision: 0,
     state: cloneProjectDesignState(state),
     source: 'api',
     sourcePath: '',
@@ -202,19 +205,28 @@ function safeString(value: unknown, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
+function safeInteger(value: unknown, fallback = 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
 export function normalizeProjectRecord(value: unknown, source: 'api' | 'app-save', sourcePath: string): StoredProjectRecord | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
 
   const raw = value as Partial<StoredProjectRecord> & Partial<ProjectFilePayload> & {
-    project?: { id?: unknown; name?: unknown; updatedAt?: unknown };
+    project?: { id?: unknown; name?: unknown; updatedAt?: unknown; revision?: unknown };
+    revision?: unknown;
   };
 
   if (raw.project && typeof raw.project === 'object') {
     const id = safeString(raw.project.id);
     const name = safeString(raw.project.name);
     const updatedAt = safeString(raw.project.updatedAt, new Date().toISOString());
+    const revision = safeInteger(raw.project.revision, 0);
     if (!id || !name) {
       return null;
     }
@@ -223,6 +235,7 @@ export function normalizeProjectRecord(value: unknown, source: 'api' | 'app-save
       id,
       name,
       updatedAt,
+      revision,
       state: sanitizeProjectState(raw.state),
       source,
       sourcePath,
@@ -232,6 +245,7 @@ export function normalizeProjectRecord(value: unknown, source: 'api' | 'app-save
   const id = safeString(raw.id);
   const name = safeString(raw.name);
   const updatedAt = safeString(raw.updatedAt, new Date().toISOString());
+  const revision = safeInteger(raw.revision, 0);
   if (!id || !name) {
     return null;
   }
@@ -240,6 +254,7 @@ export function normalizeProjectRecord(value: unknown, source: 'api' | 'app-save
     id,
     name,
     updatedAt,
+    revision,
     state: sanitizeProjectState(raw.state),
     source,
     sourcePath,
@@ -494,6 +509,7 @@ export function cloneProjectForApi(source: StoredProjectRecord, nextName?: strin
     id: createProjectId(),
     name: nextName?.trim() || `${source.name} Copy`,
     updatedAt: new Date().toISOString(),
+    revision: 0,
     state: duplicatedState,
     source: 'api',
     sourcePath: '',

@@ -164,6 +164,8 @@ Notes:
 - Text box metadata includes `lineCount`, wrapped lines, and line classification.
 - Shape metadata includes background, phone frame, and all text boxes.
 - ZIP export contains project/canvas JSON + i18n text map + preview PNG (media binaries are referenced, not embedded).
+- API responses now include project `revision` for optimistic concurrency.
+- `POST /api/projects/import` should include `expectedRevision` when updating existing projects.
 - In integrated dev mode (`npm run dev`), GUI projects and API projects are auto-merged/synced.
 - Unified storage path: `appstore-preview/.project-saves/*.appstore-preview-project.json`.
 - GUI/API now share one SoT on API file storage; runtime project state no longer depends on browser `localStorage`.
