@@ -4987,6 +4987,48 @@ function App() {
     renderCanvasVideoArtifact,
   ]);
 
+  const renderPrimaryActionButtons = () => (
+    <div className="flex flex-wrap gap-2">
+      <Button type="button" variant="outline" onClick={resetStyle}>
+        <RotateCcw className="h-4 w-4" />
+        배경/프레임 초기화
+      </Button>
+      <Button type="button" variant="outline" onClick={handleUndo} disabled={!canUndo}>
+        <Undo2 className="h-4 w-4" />
+        되돌리기
+      </Button>
+      <Button type="button" variant="outline" onClick={handleRedo} disabled={!canRedo}>
+        <Redo2 className="h-4 w-4" />
+        다시실행
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={handleMeasureAll}
+        disabled={isMeasuringAll || !currentProjectId}
+      >
+        {isMeasuringAll ? '실측 중...' : '전체 캔버스 줄 수 실측'}
+      </Button>
+      <Button
+        type="button"
+        onClick={handleExport}
+        disabled={isExporting || isExportingProjectZip || !assetKind}
+      >
+        <Download className="h-4 w-4" />
+        {isExporting ? '내보내는 중...' : '소스 타입에 맞춰 내보내기'}
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={handleExportProjectZip}
+        disabled={isExporting || isExportingProjectZip || !currentProjectState}
+      >
+        <Download className="h-4 w-4" />
+        {isExportingProjectZip ? 'ZIP 생성 중...' : '프로젝트 전체 ZIP 내보내기'}
+      </Button>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#d9f4ff_0,#f2f4f7_42%,#eef2ff_100%)] px-4 py-8 text-zinc-900">
       <div className="mx-auto max-w-7xl">
@@ -5077,6 +5119,10 @@ function App() {
                 {connectedSaveDirectory ? '.project-saves 자동저장 연결됨' : '폴더 미연결'}
               </span>
             </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+            {renderPrimaryActionButtons()}
           </div>
         </header>
 
@@ -5504,45 +5550,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" onClick={resetStyle}>
-                  <RotateCcw className="h-4 w-4" />
-                  배경/프레임 초기화
-                </Button>
-                <Button type="button" variant="outline" onClick={handleUndo} disabled={!canUndo}>
-                  <Undo2 className="h-4 w-4" />
-                  되돌리기
-                </Button>
-                <Button type="button" variant="outline" onClick={handleRedo} disabled={!canRedo}>
-                  <Redo2 className="h-4 w-4" />
-                  다시실행
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={handleMeasureAll}
-                  disabled={isMeasuringAll || !currentProjectId}
-                >
-                  {isMeasuringAll ? '실측 중...' : '전체 캔버스 줄 수 실측'}
-                </Button>
-                <Button
-                  type="button"
-                  onClick={handleExport}
-                  disabled={isExporting || isExportingProjectZip || !assetKind}
-                >
-                  <Download className="h-4 w-4" />
-                  {isExporting ? '내보내는 중...' : '소스 타입에 맞춰 내보내기'}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={handleExportProjectZip}
-                  disabled={isExporting || isExportingProjectZip || !currentProjectState}
-                >
-                  <Download className="h-4 w-4" />
-                  {isExportingProjectZip ? 'ZIP 생성 중...' : '프로젝트 전체 ZIP 내보내기'}
-                </Button>
-              </div>
+              {renderPrimaryActionButtons()}
 
               <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
                 <p>{statusMessage}</p>
