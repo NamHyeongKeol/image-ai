@@ -61,6 +61,9 @@ Main endpoints:
   - Full read dump for one project (`state` + `metas` + `rawFile`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
   - Update one text box (`text`, `width`, `fontSize`, `fontKey`, `color`, `x`, `y`)
+  - Measurement fields are also patchable:
+    - `measuredLineCountByCanvas`, `measuredLineCountByDom`
+    - `measuredTextWidthByCanvas`, `measuredTextWidthByDom`
   - Limits: `width` is clamped to `120..1200`, `fontSize` is clamped to `18..160`
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/position`
   - Move one text box position only (`x`, `y`)
@@ -69,7 +72,9 @@ Main endpoints:
 - `PATCH /api/projects/:projectId/canvases/:canvasId/phone`
   - Move/scale iPhone frame (`x`, `y`, `phoneScale` or `offset: { x, y }`)
 - `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
-  - Text box meta including wrapped lines, `lineCount`, `lineClassification`, `wrappedByWidth`
+  - Text box meta including wrapped lines, `lineCount`, `lineClassification`, `wrappedByWidth`, and:
+    - `measuredLineCountByCanvas`, `measuredLineCountByDom`
+    - `measuredTextWidthByCanvas`, `measuredTextWidthByDom`
 - `GET /api/projects/:projectId/canvases/:canvasId/meta`
   - Full canvas shape meta (background, iPhone frame, all text boxes)
 - `GET /api/projects/:projectId/meta`
@@ -85,6 +90,10 @@ Notes:
 - `POST /api/projects/import` for an existing project should include `expectedRevision`.
   - If stale, API returns `409` with `code: "revision_conflict"` and `expectedRevision` / `actualRevision`.
 - Text box constraints (API + GUI shared): `width 120..1200`, `fontSize 18..160`.
+- Measurement values are stored in both engines:
+  - `*ByCanvas`: canvas-wrap/canvas-measure based
+  - `*ByDom`: browser DOM layout based
+- Legacy fields (`measuredLineCount`, `measuredTextWidth`) are still read for backward compatibility.
 - When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs project changes back to API.
 - Project SoT is the API file storage (`.project-saves/*.appstore-preview-project.json`) for both GUI and API reads/writes.
 - Legacy browser `localStorage` project data is used only for one-time migration to API storage, then no longer used as runtime state.

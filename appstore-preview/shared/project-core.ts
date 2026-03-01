@@ -31,6 +31,11 @@ export interface TextBoxModel {
   fontKey: FontKey;
   fontSize: number;
   color: string;
+  measuredLineCountByCanvas?: number | null;
+  measuredLineCountByDom?: number | null;
+  measuredTextWidthByCanvas?: number | null;
+  measuredTextWidthByDom?: number | null;
+  // Legacy fields (read compatibility only)
   measuredLineCount?: number | null;
   measuredTextWidth?: number | null;
 }
@@ -218,6 +223,14 @@ function safeNumber(value: unknown, fallback = 0) {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeMeasuredLineCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.floor(value)) : null;
+}
+
+function normalizeMeasuredTextWidth(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : null;
+}
+
 export function isFontKey(value: unknown): value is FontKey {
   return typeof value === 'string' && FONT_OPTIONS.some((option) => option.key === value);
 }
@@ -254,14 +267,18 @@ export function sanitizeCanvasState(state: unknown): CanvasDesignState {
             fontKey: isFontKey(box.fontKey) ? box.fontKey : FONT_OPTIONS[0].key,
             fontSize: clamp(safeNumber(box.fontSize, 48), TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX),
             color: safeString(box.color, '#1f3b7c'),
-            measuredLineCount:
-              typeof box.measuredLineCount === 'number' && Number.isFinite(box.measuredLineCount)
-                ? Math.max(1, Math.floor(box.measuredLineCount))
-                : null,
-            measuredTextWidth:
-              typeof box.measuredTextWidth === 'number' && Number.isFinite(box.measuredTextWidth)
-                ? Math.max(0, box.measuredTextWidth)
-                : null,
+            measuredLineCountByCanvas: normalizeMeasuredLineCount(
+              box.measuredLineCountByCanvas ?? box.measuredLineCount,
+            ),
+            measuredLineCountByDom: normalizeMeasuredLineCount(
+              box.measuredLineCountByDom ?? box.measuredLineCount,
+            ),
+            measuredTextWidthByCanvas: normalizeMeasuredTextWidth(
+              box.measuredTextWidthByCanvas ?? box.measuredTextWidth,
+            ),
+            measuredTextWidthByDom: normalizeMeasuredTextWidth(
+              box.measuredTextWidthByDom ?? box.measuredTextWidth,
+            ),
           }))
       : [],
     media: {

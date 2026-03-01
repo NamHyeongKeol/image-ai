@@ -163,6 +163,9 @@ curl -L -X POST http://localhost:4318/api/projects/<projectId>/export/zip \
 Notes:
 - Text box metadata includes `lineCount`, wrapped lines, and line classification.
 - Text box metadata includes `lineCount`, wrapped lines, and line classification.
+- Text box measured fields are split by engine:
+  - `measuredLineCountByCanvas`, `measuredTextWidthByCanvas`
+  - `measuredLineCountByDom`, `measuredTextWidthByDom`
 - Text box limits: `width 120..1200`, `fontSize 18..160` (API에서 범위 밖 값은 clamp).
 - Shape metadata includes background, phone frame, and all text boxes.
 - ZIP export contains project/canvas JSON + i18n text map + preview PNG (media binaries are referenced, not embedded).

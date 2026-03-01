@@ -76,7 +76,10 @@ interface TextBoxModel {
   fontKey: FontKey;
   fontSize: number;
   color: string;
-  measuredLineCount?: number | null;
+  measuredLineCountByCanvas?: number | null;
+  measuredLineCountByDom?: number | null;
+  measuredTextWidthByCanvas?: number | null;
+  measuredTextWidthByDom?: number | null;
 }
 
 interface TextBoxLayout {
@@ -824,7 +827,10 @@ function getDomTextMeasureContext(): DomTextMeasureContext | null {
   return domTextMeasureContext;
 }
 
-function measureWrappedTextWidthByDom(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): number | null {
+function measureTextMetricsByDom(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+  lineCount: number;
+  textWidth: number;
+} | null {
   const context = getDomTextMeasureContext();
   if (!context) {
     return null;
@@ -839,18 +845,18 @@ function measureWrappedTextWidthByDom(box: Pick<TextBoxModel, 'text' | 'width' |
   host.style.fontFamily = fontFamily;
   host.style.fontSize = `${fontSize}px`;
   host.style.fontWeight = '800';
-  host.style.lineHeight = '1.2';
+  const lineHeight = fontSize * 1.2;
+  host.style.lineHeight = `${lineHeight}px`;
   textNode.nodeValue = box.text;
   range.selectNodeContents(textNode);
 
-  const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
-  if (rects.length === 0) {
-    return 0;
-  }
+  const hostRect = host.getBoundingClientRect();
+  const lineCountByHeight = Math.max(1, Math.round(hostRect.height / Math.max(1, lineHeight)));
 
-  // Group fragments by visual line and sum each line width.
+  const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
   const lineRects: Array<{ top: number; left: number; right: number }> = [];
-  for (const rect of rects) {
+  const sortedRects = [...rects].sort((a, b) => (a.top === b.top ? a.left - b.left : a.top - b.top));
+  for (const rect of sortedRects) {
     const existing = lineRects.find((line) => Math.abs(line.top - rect.top) < 1);
     if (!existing) {
       lineRects.push({ top: rect.top, left: rect.left, right: rect.right });
@@ -861,10 +867,15 @@ function measureWrappedTextWidthByDom(box: Pick<TextBoxModel, 'text' | 'width' |
     existing.right = Math.max(existing.right, rect.right);
   }
 
-  return lineRects.reduce((sum, line) => sum + Math.max(0, line.right - line.left), 0);
+  const textWidth = lineRects.reduce((sum, line) => sum + Math.max(0, line.right - line.left), 0);
+  const lineCount = Math.max(lineCountByHeight, lineRects.length, 1);
+  return {
+    lineCount,
+    textWidth,
+  };
 }
 
-function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+function measureTextMetricsByCanvas(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
   lineCount: number;
   textWidth: number;
 } {
@@ -883,12 +894,30 @@ function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize
   const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
   ctx.font = `800 ${fontSize}px ${fontFamily}`;
   const lines = wrapTextToLines(ctx, box.text, width);
-  const domMeasuredTextWidth = measureWrappedTextWidthByDom(box);
-  const textWidth =
-    typeof domMeasuredTextWidth === 'number' && Number.isFinite(domMeasuredTextWidth)
-      ? Math.max(0, domMeasuredTextWidth)
-      : lines.reduce((sum, line) => sum + ctx.measureText(line).width, 0);
+  const textWidth = lines.reduce((sum, line) => sum + ctx.measureText(line).width, 0);
   return { lineCount: lines.length, textWidth };
+}
+
+function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
+  lineCountByCanvas: number;
+  lineCountByDom: number | null;
+  textWidthByCanvas: number;
+  textWidthByDom: number | null;
+} {
+  const canvasMeasured = measureTextMetricsByCanvas(box);
+  const domMeasured = measureTextMetricsByDom(box);
+  return {
+    lineCountByCanvas: canvasMeasured.lineCount,
+    textWidthByCanvas: canvasMeasured.textWidth,
+    lineCountByDom:
+      typeof domMeasured?.lineCount === 'number' && Number.isFinite(domMeasured.lineCount)
+        ? Math.max(1, Math.floor(domMeasured.lineCount))
+        : null,
+    textWidthByDom:
+      typeof domMeasured?.textWidth === 'number' && Number.isFinite(domMeasured.textWidth)
+        ? Math.max(0, domMeasured.textWidth)
+        : null,
+  };
 }
 
 function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -2657,8 +2686,14 @@ function App() {
           next.fontSize !== box.fontSize ||
           next.fontKey !== box.fontKey;
         if (!contentChanged) return next;
-        const { lineCount, textWidth } = measureTextMetrics(next);
-        return { ...next, measuredLineCount: lineCount, measuredTextWidth: textWidth };
+        const measured = measureTextMetrics(next);
+        return {
+          ...next,
+          measuredLineCountByCanvas: measured.lineCountByCanvas,
+          measuredLineCountByDom: measured.lineCountByDom,
+          measuredTextWidthByCanvas: measured.textWidthByCanvas,
+          measuredTextWidthByDom: measured.textWidthByDom,
+        };
       }),
     );
   }, [selectedTextBoxId]);
@@ -4346,8 +4381,14 @@ function App() {
             previous.map((box) => {
               if (box.id !== session.textBoxId) return box;
               const next = { ...box, width: nextWidth };
-              const { lineCount, textWidth } = measureTextMetrics(next);
-              return { ...next, measuredLineCount: lineCount, measuredTextWidth: textWidth };
+              const measured = measureTextMetrics(next);
+              return {
+                ...next,
+                measuredLineCountByCanvas: measured.lineCountByCanvas,
+                measuredLineCountByDom: measured.lineCountByDom,
+                measuredTextWidthByCanvas: measured.textWidthByCanvas,
+                measuredTextWidthByDom: measured.textWidthByDom,
+              };
             }),
           );
           event.currentTarget.style.cursor = 'nwse-resize';
@@ -4810,7 +4851,18 @@ function App() {
       const latestRevisionByProjectId = new Map<string, number>();
       const measuredByProjectCanvas = new Map<
         string,
-        Map<string, Map<string, { lineCount: number; textWidth: number }>>
+        Map<
+          string,
+          Map<
+            string,
+            {
+              lineCountByCanvas: number;
+              lineCountByDom: number | null;
+              textWidthByCanvas: number;
+              textWidthByDom: number | null;
+            }
+          >
+        >
       >();
 
       try {
@@ -4821,7 +4873,18 @@ function App() {
               ? currentProjectState
               : project.state;
           let latestRevision = project.revision;
-          const measuredByCanvas = new Map<string, Map<string, { lineCount: number; textWidth: number }>>();
+          const measuredByCanvas = new Map<
+            string,
+            Map<
+              string,
+              {
+                lineCountByCanvas: number;
+                lineCountByDom: number | null;
+                textWidthByCanvas: number;
+                textWidthByDom: number | null;
+              }
+            >
+          >();
 
           setStatusMessage(
             `실측 중... (${projectIndex + 1}/${targetProjects.length}) ${project.name}`,
@@ -4829,8 +4892,14 @@ function App() {
 
           for (const canvas of sourceState.canvases) {
             const updates = canvas.state.textBoxes.map((box) => {
-              const { lineCount, textWidth } = measureTextMetrics(box);
-              return { id: box.id, measuredLineCount: lineCount, measuredTextWidth: textWidth };
+              const measured = measureTextMetrics(box);
+              return {
+                id: box.id,
+                measuredLineCountByCanvas: measured.lineCountByCanvas,
+                measuredLineCountByDom: measured.lineCountByDom,
+                measuredTextWidthByCanvas: measured.textWidthByCanvas,
+                measuredTextWidthByDom: measured.textWidthByDom,
+              };
             });
 
             if (updates.length === 0) continue;
@@ -4859,7 +4928,12 @@ function App() {
                     new Map(
                       updates.map((update) => [
                         update.id,
-                        { lineCount: update.measuredLineCount, textWidth: update.measuredTextWidth },
+                        {
+                          lineCountByCanvas: update.measuredLineCountByCanvas,
+                          lineCountByDom: update.measuredLineCountByDom,
+                          textWidthByCanvas: update.measuredTextWidthByCanvas,
+                          textWidthByDom: update.measuredTextWidthByDom,
+                        },
                       ]),
                     ),
                   );
@@ -4936,8 +5010,10 @@ function App() {
 
                         return {
                           ...box,
-                          measuredLineCount: measured.lineCount,
-                          measuredTextWidth: measured.textWidth,
+                          measuredLineCountByCanvas: measured.lineCountByCanvas,
+                          measuredLineCountByDom: measured.lineCountByDom,
+                          measuredTextWidthByCanvas: measured.textWidthByCanvas,
+                          measuredTextWidthByDom: measured.textWidthByDom,
                         };
                       }),
                     },
@@ -4960,8 +5036,10 @@ function App() {
 
               return {
                 ...box,
-                measuredLineCount: measured.lineCount,
-                measuredTextWidth: measured.textWidth,
+                measuredLineCountByCanvas: measured.lineCountByCanvas,
+                measuredLineCountByDom: measured.lineCountByDom,
+                measuredTextWidthByCanvas: measured.textWidthByCanvas,
+                measuredTextWidthByDom: measured.textWidthByDom,
               };
             }),
           );

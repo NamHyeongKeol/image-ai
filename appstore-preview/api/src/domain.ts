@@ -110,6 +110,11 @@ export interface TextBoxMeta {
   lineClassification: "single-line" | "two-lines" | "three-or-more-lines";
   hasManualLineBreak: boolean;
   wrappedByWidth: boolean;
+  measuredLineCountByCanvas: number | null;
+  measuredLineCountByDom: number | null;
+  measuredTextWidthByCanvas: number | null;
+  measuredTextWidthByDom: number | null;
+  // Legacy aliases for compatibility with older clients.
   measuredLineCount: number | null;
   measuredTextWidth: number | null;
   font: {
@@ -216,6 +221,18 @@ function safeInteger(value: unknown, fallback = 0) {
     return fallback;
   }
   return Math.max(0, Math.floor(value));
+}
+
+function normalizeMeasuredLineCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(1, Math.floor(value))
+    : null;
+}
+
+function normalizeMeasuredTextWidth(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : null;
 }
 
 export function normalizeProjectRecord(
@@ -373,6 +390,19 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
   const hasManualLineBreak = box.text.includes("\n");
   const wrappedByWidth = !hasManualLineBreak && lineCount > 1;
 
+  const measuredLineCountByCanvas = normalizeMeasuredLineCount(
+    box.measuredLineCountByCanvas ?? box.measuredLineCount,
+  );
+  const measuredLineCountByDom = normalizeMeasuredLineCount(
+    box.measuredLineCountByDom ?? box.measuredLineCount,
+  );
+  const measuredTextWidthByCanvas = normalizeMeasuredTextWidth(
+    box.measuredTextWidthByCanvas ?? box.measuredTextWidth,
+  );
+  const measuredTextWidthByDom = normalizeMeasuredTextWidth(
+    box.measuredTextWidthByDom ?? box.measuredTextWidth,
+  );
+
   return {
     id: box.id,
     text: box.text,
@@ -386,14 +416,12 @@ export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
     lineClassification,
     hasManualLineBreak,
     wrappedByWidth,
-    measuredLineCount:
-      typeof box.measuredLineCount === 'number' && Number.isFinite(box.measuredLineCount)
-        ? Math.max(1, Math.floor(box.measuredLineCount))
-        : null,
-    measuredTextWidth:
-      typeof box.measuredTextWidth === 'number' && Number.isFinite(box.measuredTextWidth)
-        ? Math.max(0, box.measuredTextWidth)
-        : null,
+    measuredLineCountByCanvas,
+    measuredLineCountByDom,
+    measuredTextWidthByCanvas,
+    measuredTextWidthByDom,
+    measuredLineCount: measuredLineCountByCanvas,
+    measuredTextWidth: measuredTextWidthByDom,
     font: {
       key: box.fontKey,
       family: fontFamily,
@@ -528,6 +556,44 @@ export function patchTextBox(
   box: TextBoxModel,
   patch: Partial<TextBoxModel>,
 ): TextBoxModel {
+  const contentChanged =
+    (typeof patch.text === "string" && patch.text !== box.text) ||
+    (typeof patch.width === "number" && patch.width !== box.width) ||
+    (typeof patch.fontSize === "number" && patch.fontSize !== box.fontSize) ||
+    (isFontKey(patch.fontKey) && patch.fontKey !== box.fontKey);
+
+  const resolveLineMetric = (
+    explicit: unknown,
+    legacy: unknown,
+    current: number | null | undefined,
+  ) => {
+    if (explicit !== undefined) {
+      if (explicit === null) return null;
+      return normalizeMeasuredLineCount(explicit) ?? (current ?? null);
+    }
+    if (legacy !== undefined) {
+      if (legacy === null) return null;
+      return normalizeMeasuredLineCount(legacy) ?? (current ?? null);
+    }
+    return contentChanged ? null : (current ?? null);
+  };
+
+  const resolveWidthMetric = (
+    explicit: unknown,
+    legacy: unknown,
+    current: number | null | undefined,
+  ) => {
+    if (explicit !== undefined) {
+      if (explicit === null) return null;
+      return normalizeMeasuredTextWidth(explicit) ?? (current ?? null);
+    }
+    if (legacy !== undefined) {
+      if (legacy === null) return null;
+      return normalizeMeasuredTextWidth(legacy) ?? (current ?? null);
+    }
+    return contentChanged ? null : (current ?? null);
+  };
+
   return {
     ...box,
     text: typeof patch.text === "string" ? patch.text : box.text,
@@ -543,32 +609,26 @@ export function patchTextBox(
         : box.fontSize,
     fontKey: isFontKey(patch.fontKey) ? patch.fontKey : box.fontKey,
     color: typeof patch.color === "string" ? patch.color : box.color,
-    measuredLineCount: (() => {
-      // 측정값을 직접 설정하는 경우
-      if ('measuredLineCount' in patch) {
-        const v = patch.measuredLineCount;
-        if (v === null || v === undefined) return null;
-        return typeof v === 'number' && Number.isFinite(v) ? Math.max(1, Math.floor(v)) : box.measuredLineCount ?? null;
-      }
-      // 텍스트/width/fontSize가 바뀌면 기존 실측값은 무효 → null로 리셋
-      const contentChanged =
-        (typeof patch.text === 'string' && patch.text !== box.text) ||
-        (typeof patch.width === 'number' && patch.width !== box.width) ||
-        (typeof patch.fontSize === 'number' && patch.fontSize !== box.fontSize);
-      return contentChanged ? null : (box.measuredLineCount ?? null);
-    })(),
-    measuredTextWidth: (() => {
-      if ('measuredTextWidth' in patch) {
-        const v = patch.measuredTextWidth;
-        if (v === null || v === undefined) return null;
-        return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : box.measuredTextWidth ?? null;
-      }
-      const contentChanged =
-        (typeof patch.text === 'string' && patch.text !== box.text) ||
-        (typeof patch.width === 'number' && patch.width !== box.width) ||
-        (typeof patch.fontSize === 'number' && patch.fontSize !== box.fontSize);
-      return contentChanged ? null : (box.measuredTextWidth ?? null);
-    })(),
+    measuredLineCountByCanvas: resolveLineMetric(
+      patch.measuredLineCountByCanvas,
+      patch.measuredLineCount,
+      box.measuredLineCountByCanvas ?? box.measuredLineCount,
+    ),
+    measuredLineCountByDom: resolveLineMetric(
+      patch.measuredLineCountByDom,
+      undefined,
+      box.measuredLineCountByDom ?? box.measuredLineCount,
+    ),
+    measuredTextWidthByCanvas: resolveWidthMetric(
+      patch.measuredTextWidthByCanvas,
+      undefined,
+      box.measuredTextWidthByCanvas ?? box.measuredTextWidth,
+    ),
+    measuredTextWidthByDom: resolveWidthMetric(
+      patch.measuredTextWidthByDom,
+      patch.measuredTextWidth,
+      box.measuredTextWidthByDom ?? box.measuredTextWidth,
+    ),
   };
 }
 
