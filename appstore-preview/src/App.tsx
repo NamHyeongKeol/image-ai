@@ -27,11 +27,32 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  CANVAS_PRESETS as CORE_CANVAS_PRESETS,
+  FONT_OPTIONS as CORE_FONT_OPTIONS,
+  TEXT_BOX_FONT_SIZE_MAX as CORE_TEXT_BOX_FONT_SIZE_MAX,
+  TEXT_BOX_FONT_SIZE_MIN as CORE_TEXT_BOX_FONT_SIZE_MIN,
+  TEXT_BOX_MAX_WIDTH as CORE_TEXT_BOX_MAX_WIDTH,
+  TEXT_BOX_MIN_WIDTH as CORE_TEXT_BOX_MIN_WIDTH,
+  cloneCanvasState as cloneCanvasStateCore,
+  cloneProjectDesignState as cloneProjectDesignStateCore,
+  createCanvasRecord as createCanvasRecordCore,
+  createEmptyCanvasState as createEmptyCanvasStateCore,
+  createProjectDesignState as createProjectDesignStateCore,
+  createProjectId as createProjectIdCore,
+  duplicateProjectState as duplicateProjectStateCore,
+  getCanvasDimensionsFromState as getCanvasDimensionsFromStateCore,
+  getCanvasPresetById as getCanvasPresetByIdCore,
+  getFontFamily as getFontFamilyCore,
+  getPhoneBaseMetrics as getPhoneBaseMetricsCore,
+  sanitizeFileNameSegment as sanitizeFileNameSegmentCore,
+  sanitizeProjectState as sanitizeProjectStateCore,
+} from '../shared/project-core';
 
 type MediaKind = 'image' | 'video' | null;
 type BackgroundMode = 'solid' | 'gradient';
 type ArtifactKind = 'image' | 'video';
-type FontKey = (typeof FONT_OPTIONS)[number]['key'];
+type FontKey = (typeof CORE_FONT_OPTIONS)[number]['key'];
 type DragTarget = 'phone' | 'text-box' | 'text-box-resize';
 
 interface Offset {
@@ -196,33 +217,15 @@ interface DragSession {
   moved: boolean;
 }
 
-const CANVAS_PRESETS = [
-  { id: '886x1920', label: '886 x 1920 (기본)', width: 886, height: 1920 },
-  { id: '1260x2736', label: '1260 x 2736', width: 1260, height: 2736 },
-  { id: '1320x2868', label: '1320 x 2868', width: 1320, height: 2868 },
-  { id: '1290x2796', label: '1290 x 2796', width: 1290, height: 2796 },
-  { id: '1242x2688', label: '1242 x 2688', width: 1242, height: 2688 },
-  { id: '1284x2778', label: '1284 x 2778', width: 1284, height: 2778 },
-  { id: '1206x2622', label: '1206 x 2622', width: 1206, height: 2622 },
-  { id: '1179x2556', label: '1179 x 2556', width: 1179, height: 2556 },
-  { id: '1125x2436', label: '1125 x 2436', width: 1125, height: 2436 },
-  { id: '1080x2340', label: '1080 x 2340', width: 1080, height: 2340 },
-  { id: '1170x2532', label: '1170 x 2532', width: 1170, height: 2532 },
-] as const;
+const CANVAS_PRESETS = CORE_CANVAS_PRESETS.map((preset, index) =>
+  index === 0 ? { ...preset, label: '886 x 1920 (기본)' } : preset,
+);
 
 const DEFAULT_CANVAS_PRESET = CANVAS_PRESETS[0];
 const DEFAULT_CANVAS_PRESET_ID = DEFAULT_CANVAS_PRESET.id;
-const PHONE_WIDTH_RATIO = (DEFAULT_CANVAS_PRESET.width - 220) / DEFAULT_CANVAS_PRESET.width;
-const PHONE_HEIGHT_RATIO = 1400 / DEFAULT_CANVAS_PRESET.height;
-const PHONE_TOP_RATIO = 260 / DEFAULT_CANVAS_PRESET.height;
 const CENTER_SNAP_THRESHOLD_PX = 5;
 
-const FONT_OPTIONS = [
-  { key: 'pretendard', label: 'Pretendard', family: 'Pretendard, "Noto Sans KR", sans-serif' },
-  { key: 'noto', label: 'Noto Sans KR', family: '"Noto Sans KR", sans-serif' },
-  { key: 'nanum', label: 'Nanum Myeongjo', family: '"Nanum Myeongjo", serif' },
-  { key: 'black-han', label: 'Black Han Sans', family: '"Black Han Sans", sans-serif' },
-] as const;
+const FONT_OPTIONS = CORE_FONT_OPTIONS;
 
 const DEFAULTS = {
   backgroundMode: 'solid' as BackgroundMode,
@@ -239,10 +242,10 @@ const PROJECT_AUTOSAVE_DELAY_MS = 700;
 const CANVAS_THUMBNAIL_AUTOSAVE_DELAY_MS = 280;
 const CANVAS_THUMBNAIL_WIDTH = 154;
 const TEXT_BOX_RESIZE_HANDLE_SIZE = 20;
-const TEXT_BOX_MIN_WIDTH = 120;
-const TEXT_BOX_MAX_WIDTH = 1200;
-const TEXT_BOX_FONT_SIZE_MIN = 18;
-const TEXT_BOX_FONT_SIZE_MAX = 160;
+const TEXT_BOX_MIN_WIDTH = CORE_TEXT_BOX_MIN_WIDTH;
+const TEXT_BOX_MAX_WIDTH = CORE_TEXT_BOX_MAX_WIDTH;
+const TEXT_BOX_FONT_SIZE_MIN = CORE_TEXT_BOX_FONT_SIZE_MIN;
+const TEXT_BOX_FONT_SIZE_MAX = CORE_TEXT_BOX_FONT_SIZE_MAX;
 const PHONE_SCALE_PERCENT_MIN = 50;
 const PHONE_SCALE_PERCENT_MAX = 180;
 const HISTORY_LIMIT_PER_CANVAS = 120;
@@ -296,12 +299,11 @@ interface ApiProjectDetailPayload {
 }
 
 function getCanvasPresetById(id: string) {
-  return CANVAS_PRESETS.find((preset) => preset.id === id) ?? DEFAULT_CANVAS_PRESET;
+  return getCanvasPresetByIdCore(id);
 }
 
 function getCanvasDimensionsFromState(state: CanvasDesignState) {
-  const preset = getCanvasPresetById(state.canvasPresetId);
-  return { width: preset.width, height: preset.height };
+  return getCanvasDimensionsFromStateCore(state);
 }
 
 function getCanvasThumbnailHeight(width: number, height: number) {
@@ -309,30 +311,11 @@ function getCanvasThumbnailHeight(width: number, height: number) {
 }
 
 function getPhoneBaseMetrics(canvasWidth: number, canvasHeight: number, phoneScale: number) {
-  const width = canvasWidth * PHONE_WIDTH_RATIO * phoneScale;
-  const height = canvasHeight * PHONE_HEIGHT_RATIO * phoneScale;
-  return {
-    width,
-    height,
-    x: (canvasWidth - width) / 2,
-    y: canvasHeight * PHONE_TOP_RATIO,
-  };
-}
-
-function cloneProjectCanvasRecord(canvas: ProjectCanvasRecord): ProjectCanvasRecord {
-  return {
-    id: canvas.id,
-    name: canvas.name,
-    state: cloneCanvasState(canvas.state),
-    thumbnailDataUrl: canvas.thumbnailDataUrl,
-  };
+  return getPhoneBaseMetricsCore(canvasWidth, canvasHeight, phoneScale);
 }
 
 function cloneProjectDesignState(state: ProjectDesignState): ProjectDesignState {
-  return {
-    currentCanvasId: state.currentCanvasId,
-    canvases: state.canvases.map((canvas) => cloneProjectCanvasRecord(canvas)),
-  };
+  return cloneProjectDesignStateCore(state);
 }
 
 function cloneAppHistorySnapshot(snapshot: AppHistorySnapshot): AppHistorySnapshot {
@@ -365,69 +348,26 @@ function areAppHistorySnapshotsEqual(left: AppHistorySnapshot, right: AppHistory
 }
 
 function createEmptyCanvasState(): CanvasDesignState {
-  return {
-    canvasPresetId: DEFAULT_CANVAS_PRESET_ID,
-    backgroundMode: DEFAULTS.backgroundMode,
-    backgroundPrimary: DEFAULTS.backgroundPrimary,
-    backgroundSecondary: DEFAULTS.backgroundSecondary,
-    gradientAngle: DEFAULTS.gradientAngle,
-    phoneOffset: { x: 0, y: 0 },
-    phoneScale: DEFAULTS.phoneScale,
-    textBoxes: [],
-    media: {
-      kind: null,
-      name: '',
-    },
-  };
+  return createEmptyCanvasStateCore();
 }
 
 function cloneCanvasState(state: CanvasDesignState): CanvasDesignState {
-  return {
-    ...state,
-    phoneOffset: { ...state.phoneOffset },
-    textBoxes: state.textBoxes.map((box) => ({ ...box })),
-    media: { ...state.media },
-  };
+  return cloneCanvasStateCore(state);
 }
 
 function createProjectId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `project-${crypto.randomUUID()}`;
-  }
-
-  return `project-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-}
-
-function createCanvasId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `canvas-${crypto.randomUUID()}`;
-  }
-
-  return `canvas-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  return createProjectIdCore();
 }
 
 function createCanvasRecord(name: string, state: CanvasDesignState = createEmptyCanvasState()): ProjectCanvasRecord {
-  return {
-    id: createCanvasId(),
-    name,
-    state: cloneCanvasState(state),
-    thumbnailDataUrl: undefined,
-  };
+  return createCanvasRecordCore(name, state);
 }
 
 function createProjectDesignState(initialCanvas?: ProjectCanvasRecord): ProjectDesignState {
-  const firstCanvas = initialCanvas ?? createCanvasRecord('캔버스 1');
-  return {
-    canvases: [
-      {
-        id: firstCanvas.id,
-        name: firstCanvas.name,
-        state: cloneCanvasState(firstCanvas.state),
-        thumbnailDataUrl: firstCanvas.thumbnailDataUrl,
-      },
-    ],
-    currentCanvasId: firstCanvas.id,
-  };
+  return createProjectDesignStateCore(initialCanvas, {
+    defaultCanvasName: '캔버스 1',
+    canvasNamePrefix: '캔버스',
+  });
 }
 
 function createProjectRecord(name: string, state: ProjectDesignState = createProjectDesignState()): ProjectRecord {
@@ -499,108 +439,19 @@ function createDuplicateName(existingNames: string[], sourceName: string) {
 }
 
 function sanitizeFileNameSegment(name: string) {
-  return name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 60) || 'project';
+  return sanitizeFileNameSegmentCore(name);
 }
 
 function buildProjectCanvasMediaKey(projectId: string, canvasId: string) {
   return `${projectId}::${canvasId}`;
 }
 
-function sanitizeCanvasState(state: unknown): CanvasDesignState {
-  if (!state || typeof state !== 'object') {
-    return createEmptyCanvasState();
-  }
-
-  const fallback = createEmptyCanvasState();
-  const raw = state as Partial<CanvasDesignState>;
-  const rawMedia = raw.media;
-  const presetId = typeof raw.canvasPresetId === 'string' ? raw.canvasPresetId : DEFAULT_CANVAS_PRESET_ID;
-  const preset = getCanvasPresetById(presetId);
-
-  return {
-    canvasPresetId: preset.id,
-    backgroundMode: raw.backgroundMode === 'gradient' ? 'gradient' : 'solid',
-    backgroundPrimary: typeof raw.backgroundPrimary === 'string' ? raw.backgroundPrimary : fallback.backgroundPrimary,
-    backgroundSecondary: typeof raw.backgroundSecondary === 'string' ? raw.backgroundSecondary : fallback.backgroundSecondary,
-    gradientAngle: typeof raw.gradientAngle === 'number' ? raw.gradientAngle : fallback.gradientAngle,
-    phoneOffset:
-      raw.phoneOffset && typeof raw.phoneOffset === 'object'
-        ? {
-            x: typeof raw.phoneOffset.x === 'number' ? raw.phoneOffset.x : 0,
-            y: typeof raw.phoneOffset.y === 'number' ? raw.phoneOffset.y : 0,
-          }
-        : { ...fallback.phoneOffset },
-    phoneScale: typeof raw.phoneScale === 'number' ? raw.phoneScale : fallback.phoneScale,
-    textBoxes: Array.isArray(raw.textBoxes)
-      ? raw.textBoxes
-          .filter((box): box is TextBoxModel => Boolean(box && typeof box === 'object'))
-          .map((box, index) => ({
-            id: typeof box.id === 'string' && box.id ? box.id : `text-legacy-${index}`,
-            text: typeof box.text === 'string' ? box.text : '',
-            x: typeof box.x === 'number' ? box.x : 0,
-            y: typeof box.y === 'number' ? box.y : 0,
-            width:
-              typeof box.width === 'number'
-                ? Math.min(TEXT_BOX_MAX_WIDTH, Math.max(TEXT_BOX_MIN_WIDTH, box.width))
-                : 320,
-            fontKey:
-              typeof box.fontKey === 'string' && FONT_OPTIONS.some((option) => option.key === box.fontKey)
-                ? box.fontKey
-                : FONT_OPTIONS[0].key,
-            fontSize:
-              typeof box.fontSize === 'number'
-                ? clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX)
-                : 48,
-            color: typeof box.color === 'string' ? box.color : '#1f3b7c',
-          }))
-      : [],
-    media: {
-      kind: rawMedia?.kind === 'image' || rawMedia?.kind === 'video' ? rawMedia.kind : null,
-      name: typeof rawMedia?.name === 'string' ? rawMedia.name : '',
-    },
-  };
-}
-
 function sanitizeProjectState(state: unknown): ProjectDesignState {
-  if (!state || typeof state !== 'object') {
-    return createProjectDesignState();
-  }
-
-  const raw = state as { canvases?: unknown; currentCanvasId?: unknown };
-  if (Array.isArray(raw.canvases)) {
-    const canvases = raw.canvases
-      .filter((canvas): canvas is { id?: unknown; name?: unknown; state?: unknown } =>
-        Boolean(canvas && typeof canvas === 'object'),
-      )
-      .map((canvas, index) => ({
-        id: typeof canvas.id === 'string' && canvas.id ? canvas.id : createCanvasId(),
-        name: typeof canvas.name === 'string' && canvas.name.trim() ? canvas.name.trim() : `캔버스 ${index + 1}`,
-        state: sanitizeCanvasState(canvas.state ?? canvas),
-        thumbnailDataUrl:
-          typeof (canvas as { thumbnailDataUrl?: unknown }).thumbnailDataUrl === 'string'
-            ? (canvas as { thumbnailDataUrl: string }).thumbnailDataUrl
-            : undefined,
-      }));
-
-    const safeCanvases = canvases.length > 0 ? canvases : [createCanvasRecord('캔버스 1')];
-    const requestedCurrentId = typeof raw.currentCanvasId === 'string' ? raw.currentCanvasId : safeCanvases[0].id;
-    const currentCanvasId = safeCanvases.some((canvas) => canvas.id === requestedCurrentId)
-      ? requestedCurrentId
-      : safeCanvases[0].id;
-
-    return {
-      canvases: safeCanvases.map((canvas) => ({
-        id: canvas.id,
-        name: canvas.name,
-        state: cloneCanvasState(canvas.state),
-        thumbnailDataUrl: canvas.thumbnailDataUrl,
-      })),
-      currentCanvasId,
-    };
-  }
-
-  const legacyCanvas = createCanvasRecord('캔버스 1', sanitizeCanvasState(state));
-  return createProjectDesignState(legacyCanvas);
+  return sanitizeProjectStateCore(state, {
+    defaultCanvasName: '캔버스 1',
+    canvasNamePrefix: '캔버스',
+    legacyFallback: true,
+  });
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -1038,7 +889,7 @@ function wrapTextToLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: 
 }
 
 function getFontFamily(fontKey: FontKey) {
-  return FONT_OPTIONS.find((option) => option.key === fontKey)?.family ?? FONT_OPTIONS[0].family;
+  return getFontFamilyCore(fontKey);
 }
 
 function computeLayoutMetrics(ctx: CanvasRenderingContext2D, options: DrawOptions): LayoutMetrics {
@@ -1945,20 +1796,8 @@ function App() {
 
       const resolvedSourceState =
         sourceProjectId === currentProjectId && currentProjectState ? currentProjectState : sourceProject.state;
-      const projectIdMap = new Map<string, string>();
-      const duplicatedCanvases = resolvedSourceState.canvases.map((canvas) => {
-        const duplicatedCanvasId = createCanvasId();
-        projectIdMap.set(canvas.id, duplicatedCanvasId);
-        return {
-          id: duplicatedCanvasId,
-          name: canvas.name,
-          state: cloneCanvasState(canvas.state),
-          thumbnailDataUrl: canvas.thumbnailDataUrl,
-        } satisfies ProjectCanvasRecord;
-      });
+      const { duplicatedState, canvasIdMap } = duplicateProjectStateCore(resolvedSourceState);
       const duplicatedProjectId = createProjectId();
-      const duplicatedCurrentCanvasId =
-        projectIdMap.get(resolvedSourceState.currentCanvasId) ?? duplicatedCanvases[0]?.id ?? createCanvasId();
       const duplicatedProjectName = createDuplicateName(
         projects.map((project) => project.name),
         sourceProject.name,
@@ -1968,10 +1807,7 @@ function App() {
         id: duplicatedProjectId,
         name: duplicatedProjectName,
         updatedAt: new Date().toISOString(),
-        state: {
-          canvases: duplicatedCanvases,
-          currentCanvasId: duplicatedCurrentCanvasId,
-        },
+        state: duplicatedState,
       };
 
       void (async () => {
@@ -1981,7 +1817,7 @@ function App() {
             continue;
           }
 
-          const duplicatedCanvasId = projectIdMap.get(sourceCanvas.id);
+          const duplicatedCanvasId = canvasIdMap.get(sourceCanvas.id);
           if (!duplicatedCanvasId) {
             continue;
           }
