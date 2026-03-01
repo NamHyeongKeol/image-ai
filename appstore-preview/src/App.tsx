@@ -1333,6 +1333,8 @@ function App() {
   const historyEntryRef = useRef<AppHistoryEntry>({ past: [], present: null, future: [] });
   const isApplyingHistoryRef = useRef(false);
   const apiHydrationCompletedRef = useRef(false);
+  const syncableProjectIdsRef = useRef<Set<string>>(new Set());
+  const pendingProjectDetailHydrationRef = useRef<Set<string>>(new Set());
   const lastCanvasPreloadSignatureRef = useRef('');
 
   const [projects, setProjects] = useState<ProjectRecord[]>([initialProject]);
@@ -1415,6 +1417,24 @@ function App() {
     () => projects.find((project) => project.id === currentProjectId) ?? null,
     [projects, currentProjectId],
   );
+
+  const markProjectSyncable = useCallback((projectId: string) => {
+    if (!projectId) {
+      return;
+    }
+    const next = new Set(syncableProjectIdsRef.current);
+    next.add(projectId);
+    syncableProjectIdsRef.current = next;
+  }, []);
+
+  const removeProjectFromSyncable = useCallback((projectId: string) => {
+    if (!projectId || !syncableProjectIdsRef.current.has(projectId)) {
+      return;
+    }
+    const next = new Set(syncableProjectIdsRef.current);
+    next.delete(projectId);
+    syncableProjectIdsRef.current = next;
+  }, []);
 
   const currentCanvasState = useMemo<CanvasDesignState>(
     () => ({
@@ -1832,6 +1852,7 @@ function App() {
 
     const now = new Date().toISOString();
     const newProject = createProjectRecord(createNextProjectName(projects));
+    markProjectSyncable(newProject.id);
     setProjects((previous) => [
       ...previous.map((project) =>
         project.id === currentProjectId
@@ -1846,7 +1867,7 @@ function App() {
     ]);
     setCurrentProjectId(newProject.id);
     setCurrentCanvasId(newProject.state.currentCanvasId);
-  }, [currentProjectId, currentProjectState, projects]);
+  }, [currentProjectId, currentProjectState, markProjectSyncable, projects]);
 
   const handleRenameProject = useCallback((targetProjectId: string, nextName: string) => {
     const trimmedName = nextName.trimStart();
@@ -1919,6 +1940,7 @@ function App() {
         }
 
         const now = new Date().toISOString();
+        markProjectSyncable(duplicatedProject.id);
         setProjects((previous) => [
           ...previous.map((project) =>
             project.id === currentProjectId && currentProjectState
@@ -1944,7 +1966,7 @@ function App() {
         setStatusMessage(`${sourceProject.name} 프로젝트를 ${duplicatedProject.name}로 복제했습니다.`);
       })();
     },
-    [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia],
+    [applyProjectState, currentProjectId, currentProjectState, markProjectSyncable, projects, restoreProjectMedia],
   );
 
   const syncDeleteProjectToApi = useCallback(async (targetProjectId: string) => {
@@ -1988,6 +2010,7 @@ function App() {
       const syncedTargetProject = projectsWithSyncedCurrent[targetIndex] ?? targetProject;
       const remainingProjects = projectsWithSyncedCurrent.filter((project) => project.id !== targetProjectId);
 
+      removeProjectFromSyncable(targetProjectId);
       setProjects(remainingProjects);
 
       if (targetProjectId === currentProjectId) {
@@ -2009,7 +2032,7 @@ function App() {
         }
       })();
     },
-    [applyProjectState, currentProjectId, currentProjectState, projects, restoreProjectMedia, syncDeleteProjectToApi],
+    [applyProjectState, currentProjectId, currentProjectState, projects, removeProjectFromSyncable, restoreProjectMedia, syncDeleteProjectToApi],
   );
 
   const handleSelectCanvas = useCallback(
@@ -3275,6 +3298,7 @@ function App() {
         const summaryPreferredProject = summaryProjects.find((project) => project.id === preferredSummaryId) ?? summaryProjects[0];
         const summaryPreferredCanvasId = summaryPreferredProject?.state.currentCanvasId ?? '';
 
+        syncableProjectIdsRef.current = new Set();
         loadedProjectIdRef.current = null;
         setProjects(summaryProjects);
         setCurrentProjectId(summaryPreferredProject.id);
@@ -3342,6 +3366,7 @@ function App() {
           preferredProject.state.canvases[0]?.id ??
           '';
 
+        syncableProjectIdsRef.current = new Set(normalizedDetailed.map((project) => project.id));
         loadedProjectIdRef.current = null;
         setProjects(mergedProjects);
         setCurrentProjectId(preferredProject.id);
@@ -3369,24 +3394,87 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!apiHydrationCompletedRef.current || !currentProjectId) {
+      return;
+    }
+
+    const pendingHydrationSet = pendingProjectDetailHydrationRef.current;
+    if (syncableProjectIdsRef.current.has(currentProjectId)) {
+      return;
+    }
+
+    if (pendingHydrationSet.has(currentProjectId)) {
+      return;
+    }
+
+    const targetProjectId = currentProjectId;
+    pendingHydrationSet.add(targetProjectId);
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const detailResponse = await fetch(`/api/projects/${encodeURIComponent(targetProjectId)}?includeThumbnails=false`, {
+          signal: controller.signal,
+        });
+        if (!detailResponse.ok) {
+          return;
+        }
+
+        const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
+        const hydratedProject: ProjectRecord = {
+          id: detailPayload.project?.id ?? targetProjectId,
+          name: detailPayload.project?.name ?? '프로젝트',
+          updatedAt: detailPayload.project?.updatedAt ?? new Date().toISOString(),
+          state: sanitizeProjectState(detailPayload.state),
+        };
+
+        markProjectSyncable(hydratedProject.id);
+        loadedProjectIdRef.current = null;
+        setProjects((previous) =>
+          previous.map((project) => (project.id === targetProjectId ? hydratedProject : project)),
+        );
+        setStatusMessage(`${hydratedProject.name} 프로젝트 상세를 다시 불러왔습니다.`);
+        setErrorMessage('');
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+      } finally {
+        pendingHydrationSet.delete(targetProjectId);
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      pendingHydrationSet.delete(targetProjectId);
+    };
+  }, [currentProjectId, markProjectSyncable]);
+
+  useEffect(() => {
     if (!apiHydrationCompletedRef.current || projects.length === 0) {
       return;
     }
 
     const timer = window.setTimeout(() => {
       void (async () => {
-        const syncTargets = projects.map((project) => ({
-          id: project.id,
-          name: project.name,
-          updatedAt: project.id === currentProjectId ? new Date().toISOString() : project.updatedAt,
-          state: cloneProjectDesignState(
-            project.id === currentProjectId && currentProjectState ? currentProjectState : project.state,
-          ),
-        }));
+        const syncableIds = syncableProjectIdsRef.current;
+        const syncTargets = projects
+          .filter((project) => syncableIds.has(project.id))
+          .map((project) => ({
+            id: project.id,
+            name: project.name,
+            updatedAt: project.id === currentProjectId ? new Date().toISOString() : project.updatedAt,
+            state: cloneProjectDesignState(
+              project.id === currentProjectId && currentProjectState ? currentProjectState : project.state,
+            ),
+          }));
+        if (syncTargets.length === 0) {
+          return;
+        }
 
         const results = await Promise.allSettled(
-          syncTargets.map((project) =>
-            fetch('/api/projects/import', {
+          syncTargets.map(async (project) => {
+            const response = await fetch('/api/projects/import', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -3399,12 +3487,49 @@ function App() {
                   state: project.state,
                 },
               }),
-            }),
-          ),
+            });
+
+            if (response.ok) {
+              return {
+                ok: true as const,
+                projectId: project.id,
+                status: response.status,
+              };
+            }
+
+            let message = '';
+            try {
+              const payload = (await response.json()) as { message?: unknown };
+              if (typeof payload.message === 'string') {
+                message = payload.message;
+              }
+            } catch {
+              message = '';
+            }
+
+            return {
+              ok: false as const,
+              projectId: project.id,
+              status: response.status,
+              message,
+            };
+          }),
         );
 
-        if (results.some((result) => result.status === 'rejected')) {
-          setErrorMessage('일부 프로젝트를 API 저장소로 동기화하지 못했습니다.');
+        const hasRejected = results.some((result) => result.status === 'rejected');
+        const failedResponses = results
+          .filter((result): result is PromiseFulfilledResult<{ ok: false; projectId: string; status: number; message: string }> =>
+            result.status === 'fulfilled' && !result.value.ok,
+          )
+          .map((result) => result.value);
+
+        if (hasRejected || failedResponses.length > 0) {
+          const hasConflict = failedResponses.some((result) => result.status === 409);
+          if (hasConflict) {
+            setErrorMessage('데이터 보호를 위해 일부 프로젝트 동기화가 차단되었습니다. 새로고침 후 다시 확인해 주세요.');
+          } else {
+            setErrorMessage('일부 프로젝트를 API 저장소로 동기화하지 못했습니다.');
+          }
         }
       })();
     }, PROJECT_AUTOSAVE_DELAY_MS);

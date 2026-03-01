@@ -6,11 +6,13 @@ import {
   cloneProjectForApi,
   computeCanvasMeta,
   createProjectDesignState,
+  DEFAULT_CANVAS_PRESET,
   findCanvas,
   findTextBox,
   normalizeProjectRecord,
   patchTextBox,
   sanitizeProjectState,
+  type ProjectDesignState,
   type StoredProjectRecord,
   type TextBoxModel,
 } from './domain.js';
@@ -19,6 +21,7 @@ import {
   deleteProjectById,
   ProjectNotFoundError,
   createProject,
+  getProjectOrNull,
   getProjectOrThrow,
   listProjects,
   saveProject,
@@ -82,6 +85,50 @@ function toProjectSummary(project: StoredProjectRecord) {
     currentCanvasId: project.state.currentCanvasId,
     source: project.source,
   };
+}
+
+function computeProjectStateStats(state: ProjectDesignState) {
+  return state.canvases.reduce(
+    (acc, canvas) => {
+      acc.canvasCount += 1;
+      acc.textBoxCount += canvas.state.textBoxes.length;
+      if (canvas.state.media.kind) {
+        acc.mediaCount += 1;
+      }
+      return acc;
+    },
+    { canvasCount: 0, textBoxCount: 0, mediaCount: 0 },
+  );
+}
+
+function isLikelyHydrationPlaceholderState(state: ProjectDesignState) {
+  if (state.canvases.length !== 1) {
+    return false;
+  }
+
+  const canvas = state.canvases[0];
+  if (!canvas || state.currentCanvasId !== canvas.id) {
+    return false;
+  }
+
+  const defaultCanvasName = canvas.name === 'Canvas 1' || canvas.name === '캔버스 1';
+  if (!defaultCanvasName) {
+    return false;
+  }
+
+  return (
+    canvas.state.canvasPresetId === DEFAULT_CANVAS_PRESET.id &&
+    canvas.state.backgroundMode === 'solid' &&
+    canvas.state.backgroundPrimary === '#f2f4f7' &&
+    canvas.state.backgroundSecondary === '#dbeafe' &&
+    canvas.state.gradientAngle === 26 &&
+    canvas.state.phoneOffset.x === 0 &&
+    canvas.state.phoneOffset.y === 0 &&
+    canvas.state.phoneScale === 1 &&
+    canvas.state.textBoxes.length === 0 &&
+    canvas.state.media.kind === null &&
+    canvas.state.media.name === ''
+  );
 }
 
 function parseBooleanQuery(url: URL, key: string, defaultValue: boolean) {
@@ -327,6 +374,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     const payload = body.payload as unknown;
     const filePath = typeof body.filePath === 'string' ? body.filePath : null;
     const nameOverride = typeof body.name === 'string' ? body.name.trim() : '';
+    const forceImport = body.force === true;
 
     let imported: StoredProjectRecord;
     if (payload) {
@@ -345,6 +393,23 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (nameOverride) {
       editable.name = nameOverride;
     }
+
+    if (!forceImport) {
+      const existing = await getProjectOrNull(editable.id);
+      if (existing) {
+        const existingStats = computeProjectStateStats(existing.state);
+        const existingHasMeaningfulContent =
+          existingStats.canvasCount > 1 || existingStats.textBoxCount > 0 || existingStats.mediaCount > 0;
+
+        if (existingHasMeaningfulContent && isLikelyHydrationPlaceholderState(editable.state)) {
+          throw new HttpError(
+            409,
+            'Import blocked to prevent accidental overwrite with placeholder project state. Pass force=true to override.',
+          );
+        }
+      }
+    }
+
     const persisted = await saveProject(editable);
     sendJson(response, 201, {
       imported: true,
