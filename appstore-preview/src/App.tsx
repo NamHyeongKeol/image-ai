@@ -788,20 +788,19 @@ function centerCanvasElements(state: CanvasDesignState): CanvasDesignState {
   const canvasSize = getCanvasDimensionsFromState(state);
   const basePhone = getPhoneBaseMetrics(canvasSize.width, canvasSize.height, state.phoneScale);
   const targetPhoneX = (canvasSize.width - basePhone.width) / 2;
-  const targetPhoneY = (canvasSize.height - basePhone.height) / 2;
 
   return {
     ...state,
     phoneOffset: {
       x: targetPhoneX - basePhone.x,
-      y: targetPhoneY - basePhone.y,
+      y: state.phoneOffset.y,
     },
     textBoxes: state.textBoxes.map((box) => {
       const boxBounds = measureTextBoxBounds(box);
       return {
         ...box,
         x: (canvasSize.width - boxBounds.width) / 2,
-        y: (canvasSize.height - boxBounds.height) / 2,
+        y: box.y,
       };
     }),
   };
@@ -4644,7 +4643,7 @@ function App() {
     const centeredState = centerCanvasElements(currentCanvasState);
     setPhoneOffset({ ...centeredState.phoneOffset });
     setTextBoxes(centeredState.textBoxes.map((box) => ({ ...box })));
-    setStatusMessage('현재 캔버스의 iPhone 프레임/텍스트박스를 가운데 정렬했습니다.');
+    setStatusMessage('현재 캔버스의 iPhone 프레임/텍스트박스를 가로 중앙 정렬했습니다.');
     setErrorMessage('');
   }, [currentCanvasState]);
 
@@ -4677,7 +4676,7 @@ function App() {
       setTextBoxes(centeredCurrentCanvas.textBoxes.map((box) => ({ ...box })));
     }
 
-    setStatusMessage(`현재 프로젝트의 ${centeredCanvases.length}개 캔버스를 모두 가운데 정렬했습니다.`);
+    setStatusMessage(`현재 프로젝트의 ${centeredCanvases.length}개 캔버스를 모두 가로 중앙 정렬했습니다.`);
     setErrorMessage('');
   }, [currentCanvasId, currentProject, currentProjectState, markProjectSyncable]);
 
@@ -4727,7 +4726,7 @@ function App() {
     }
 
     setStatusMessage(
-      `${nextProjects.length}개 프로젝트의 모든 캔버스(iPhone 프레임/텍스트박스)를 가운데 정렬했습니다.`,
+      `${nextProjects.length}개 프로젝트의 모든 캔버스(iPhone 프레임/텍스트박스)를 가로 중앙 정렬했습니다.`,
     );
     setErrorMessage('');
   }, [currentCanvasId, currentProjectId, currentProjectState, markProjectSyncable, projects]);
@@ -5478,7 +5477,7 @@ function App() {
         배경/프레임 초기화
       </Button>
       <Button type="button" variant="outline" onClick={handleCenterCurrentCanvasElements}>
-        현재 캔버스 가운데 정렬
+        현재 캔버스 가로 중앙 정렬
       </Button>
       <Button
         type="button"
@@ -5486,7 +5485,7 @@ function App() {
         onClick={handleCenterCurrentProjectCanvases}
         disabled={!currentProjectId || !currentProjectState}
       >
-        현재 프로젝트 전체 가운데 정렬
+        현재 프로젝트 전체 가로 중앙 정렬
       </Button>
       <Button
         type="button"
@@ -5494,7 +5493,7 @@ function App() {
         onClick={handleCenterAllProjectsCanvases}
         disabled={projects.length === 0}
       >
-        모든 프로젝트 전체 가운데 정렬
+        모든 프로젝트 전체 가로 중앙 정렬
       </Button>
       <Button type="button" variant="outline" onClick={handleShrinkCurrentCanvasTextWidths}>
         현재 캔버스 텍스트 최소 너비
