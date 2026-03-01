@@ -271,6 +271,29 @@ interface ProjectMediaRecord {
   updatedAt: string;
 }
 
+interface ApiProjectSummaryPayload {
+  id: string;
+  name: string;
+  updatedAt: string;
+  canvasCount: number;
+  currentCanvasId: string;
+  source: string;
+}
+
+interface ApiProjectListPayload {
+  projects?: ApiProjectSummaryPayload[];
+  total?: number;
+}
+
+interface ApiProjectDetailPayload {
+  project?: {
+    id: string;
+    name: string;
+    updatedAt: string;
+  };
+  state?: unknown;
+}
+
 function getCanvasPresetById(id: string) {
   return CANVAS_PRESETS.find((preset) => preset.id === id) ?? DEFAULT_CANVAS_PRESET;
 }
@@ -1346,6 +1369,8 @@ function App() {
   const copiedTextBoxRef = useRef<TextBoxModel | null>(null);
   const historyEntryRef = useRef<AppHistoryEntry>({ past: [], present: null, future: [] });
   const isApplyingHistoryRef = useRef(false);
+  const apiHydrationAttemptedRef = useRef(false);
+  const apiHydrationCompletedRef = useRef(false);
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
@@ -2843,6 +2868,141 @@ function App() {
     applyProjectState(targetProject);
     void restoreProjectMedia(targetProject);
   }, [applyProjectState, currentProjectId, projects, restoreProjectMedia]);
+
+  useEffect(() => {
+    if (apiHydrationAttemptedRef.current) {
+      return;
+    }
+    apiHydrationAttemptedRef.current = true;
+
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const listResponse = await fetch('/api/projects', { signal: controller.signal });
+        if (!listResponse.ok) {
+          return;
+        }
+
+        const listPayload = (await listResponse.json()) as ApiProjectListPayload;
+        const summaries = Array.isArray(listPayload.projects) ? listPayload.projects : [];
+        if (summaries.length === 0) {
+          return;
+        }
+
+        const fetchedProjects = await Promise.all(
+          summaries.map(async (summary) => {
+            try {
+              const detailResponse = await fetch(`/api/projects/${encodeURIComponent(summary.id)}`, {
+                signal: controller.signal,
+              });
+              if (!detailResponse.ok) {
+                return null;
+              }
+
+              const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
+              const projectId = detailPayload.project?.id ?? summary.id;
+              const projectName = detailPayload.project?.name ?? summary.name;
+              const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
+
+              return {
+                id: projectId,
+                name: projectName,
+                updatedAt,
+                state: sanitizeProjectState(detailPayload.state),
+              } satisfies ProjectRecord;
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const normalizedFetched = fetchedProjects.filter((project): project is ProjectRecord => Boolean(project));
+        if (normalizedFetched.length === 0) {
+          return;
+        }
+
+        setProjects((previous) => {
+          const byId = new Map(previous.map((project) => [project.id, project]));
+          let changed = false;
+
+          for (const fetched of normalizedFetched) {
+            const existing = byId.get(fetched.id);
+            if (!existing) {
+              byId.set(fetched.id, fetched);
+              changed = true;
+              continue;
+            }
+
+            const existingUpdatedAt = Date.parse(existing.updatedAt);
+            const fetchedUpdatedAt = Date.parse(fetched.updatedAt);
+            const shouldReplace =
+              Number.isNaN(existingUpdatedAt) ||
+              (!Number.isNaN(fetchedUpdatedAt) && fetchedUpdatedAt > existingUpdatedAt);
+
+            if (shouldReplace) {
+              byId.set(fetched.id, fetched);
+              changed = true;
+            }
+          }
+
+          if (!changed) {
+            return previous;
+          }
+
+          return Array.from(byId.values()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+        });
+
+        setStatusMessage(`${normalizedFetched.length}개 API 프로젝트를 불러왔습니다.`);
+      } catch {
+        // Ignore: API can be unavailable in pure frontend usage.
+      } finally {
+        apiHydrationCompletedRef.current = true;
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      apiHydrationCompletedRef.current = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!apiHydrationCompletedRef.current || !currentProject || !currentProjectState) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await fetch('/api/projects/import', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              payload: {
+                id: currentProject.id,
+                name: currentProject.name,
+                updatedAt: new Date().toISOString(),
+                state: currentProjectState,
+              },
+            }),
+          });
+        } catch {
+          // Ignore: local editing must continue even when API is down.
+        }
+      })();
+    }, PROJECT_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [currentProject, currentProjectState]);
 
   useEffect(() => {
     if (!currentProjectState) {

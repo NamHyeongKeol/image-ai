@@ -55,6 +55,7 @@ Main endpoints:
 Notes:
 - ZIP export includes media references but does not embed original media binaries.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
+- When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs the active GUI project back to API.
 
 ## What This Project Is
 

@@ -122,6 +122,7 @@ Notes:
 - Text box metadata includes `lineCount`, wrapped lines, and line classification.
 - Shape metadata includes background, phone frame, and all text boxes.
 - ZIP export contains project/canvas JSON + i18n text map + preview PNG (media binaries are referenced, not embedded).
+- In integrated dev mode (`npm run dev`), GUI projects and API projects are auto-merged/synced.
 
 ### 2. `mosaic-ai/` (Next.js)
 
