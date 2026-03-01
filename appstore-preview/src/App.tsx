@@ -295,20 +295,6 @@ interface ApiProjectDetailPayload {
   state?: unknown;
 }
 
-interface ApiProjectFullEntryPayload {
-  project?: {
-    id?: string;
-    name?: string;
-    updatedAt?: string;
-  };
-  state?: unknown;
-}
-
-interface ApiProjectFullListPayload {
-  projects?: ApiProjectFullEntryPayload[];
-  total?: number;
-}
-
 function getCanvasPresetById(id: string) {
   return CANVAS_PRESETS.find((preset) => preset.id === id) ?? DEFAULT_CANVAS_PRESET;
 }
@@ -679,24 +665,30 @@ function getLegacyLocalProjectStore() {
       currentProjectId: '',
     };
   }
+  try {
+    const storedProjects = parseStoredProjects(window.localStorage.getItem(LEGACY_LOCAL_PROJECTS_STORAGE_KEY));
+    if (storedProjects.length === 0) {
+      return {
+        projects: [] as ProjectRecord[],
+        currentProjectId: '',
+      };
+    }
 
-  const storedProjects = parseStoredProjects(window.localStorage.getItem(LEGACY_LOCAL_PROJECTS_STORAGE_KEY));
-  if (storedProjects.length === 0) {
+    const storedCurrentProjectId = window.localStorage.getItem(LEGACY_LOCAL_CURRENT_PROJECT_STORAGE_KEY);
+    const currentProjectId = storedProjects.some((project) => project.id === storedCurrentProjectId)
+      ? (storedCurrentProjectId as string)
+      : storedProjects[0].id;
+
+    return {
+      projects: storedProjects,
+      currentProjectId,
+    };
+  } catch {
     return {
       projects: [] as ProjectRecord[],
       currentProjectId: '',
     };
   }
-
-  const storedCurrentProjectId = window.localStorage.getItem(LEGACY_LOCAL_CURRENT_PROJECT_STORAGE_KEY);
-  const currentProjectId = storedProjects.some((project) => project.id === storedCurrentProjectId)
-    ? (storedCurrentProjectId as string)
-    : storedProjects[0].id;
-
-  return {
-    projects: storedProjects,
-    currentProjectId,
-  };
 }
 
 async function openProjectMediaDb() {
@@ -3054,8 +3046,20 @@ function App() {
       let hydrationSucceeded = false;
       try {
         const legacyStore = getLegacyLocalProjectStore();
+        const readSummaries = async () => {
+          const listResponse = await fetch('/api/projects', { signal: controller.signal });
+          if (!listResponse.ok) {
+            throw new Error('API project list read failed.');
+          }
+          const listPayload = (await listResponse.json()) as ApiProjectListPayload;
+          return Array.isArray(listPayload.projects) ? listPayload.projects : [];
+        };
+
+        let summaries = await readSummaries();
+
         const shouldMigrateLegacyLocalProjects =
           typeof window !== 'undefined' &&
+          summaries.length === 0 &&
           legacyStore.projects.length > 0 &&
           window.localStorage.getItem(API_SOT_MIGRATION_MARKER_KEY) !== 'done';
 
@@ -3083,75 +3087,10 @@ function App() {
           if (typeof window !== 'undefined') {
             window.localStorage.setItem(API_SOT_MIGRATION_MARKER_KEY, 'done');
           }
+          summaries = await readSummaries();
         }
 
-        let normalizedFetched: ProjectRecord[] = [];
-        const fullResponse = await fetch('/api/projects/full?includeMeta=false&includeRawFile=false&includeThumbnails=false', {
-          signal: controller.signal,
-        });
-        if (fullResponse.ok) {
-          const fullPayload = (await fullResponse.json()) as ApiProjectFullListPayload;
-          const rows = Array.isArray(fullPayload.projects) ? fullPayload.projects : [];
-          normalizedFetched = rows
-            .map((row) => {
-              const projectId = row.project?.id;
-              const projectName = row.project?.name;
-              const updatedAt = row.project?.updatedAt;
-              if (!projectId || !projectName || !updatedAt) {
-                return null;
-              }
-
-              return {
-                id: projectId,
-                name: projectName,
-                updatedAt,
-                state: sanitizeProjectState(row.state),
-              } satisfies ProjectRecord;
-            })
-            .filter((project): project is ProjectRecord => Boolean(project));
-        }
-
-        if (normalizedFetched.length === 0) {
-          const listResponse = await fetch('/api/projects', { signal: controller.signal });
-          if (!listResponse.ok) {
-            throw new Error('API project list read failed.');
-          }
-
-          const listPayload = (await listResponse.json()) as ApiProjectListPayload;
-          const summaries = Array.isArray(listPayload.projects) ? listPayload.projects : [];
-          const fetchedProjects = await Promise.all(
-            summaries.map(async (summary) => {
-              try {
-                const detailResponse = await fetch(
-                  `/api/projects/${encodeURIComponent(summary.id)}?includeThumbnails=false`,
-                  {
-                  signal: controller.signal,
-                  },
-                );
-                if (!detailResponse.ok) {
-                  return null;
-                }
-
-                const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
-                const projectId = detailPayload.project?.id ?? summary.id;
-                const projectName = detailPayload.project?.name ?? summary.name;
-                const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
-
-                return {
-                  id: projectId,
-                  name: projectName,
-                  updatedAt,
-                  state: sanitizeProjectState(detailPayload.state),
-                } satisfies ProjectRecord;
-              } catch {
-                return null;
-              }
-            }),
-          );
-          normalizedFetched = fetchedProjects.filter((project): project is ProjectRecord => Boolean(project));
-        }
-
-        if (normalizedFetched.length === 0) {
+        if (summaries.length === 0) {
           const createResponse = await fetch('/api/projects', {
             method: 'POST',
             headers: {
@@ -3167,17 +3106,68 @@ function App() {
             const createdPayload = (await createResponse.json()) as ApiProjectDetailPayload;
             const createdProject = createdPayload.project;
             if (createdProject?.id && createdProject.name && createdProject.updatedAt) {
-              normalizedFetched = [
+              summaries = [
                 {
                   id: createdProject.id,
                   name: createdProject.name,
                   updatedAt: createdProject.updatedAt,
-                  state: sanitizeProjectState(createdPayload.state),
+                  canvasCount: 1,
+                  currentCanvasId: sanitizeProjectState(createdPayload.state).currentCanvasId,
+                  source: 'api',
                 },
               ];
             }
           }
         }
+
+        const detailedProjects = await Promise.all(
+          summaries.map(async (summary) => {
+            try {
+              const detailResponse = await fetch(
+                `/api/projects/${encodeURIComponent(summary.id)}?includeThumbnails=false`,
+                {
+                  signal: controller.signal,
+                },
+              );
+              if (!detailResponse.ok) {
+                return null;
+              }
+
+              const detailPayload = (await detailResponse.json()) as ApiProjectDetailPayload;
+              const projectId = detailPayload.project?.id ?? summary.id;
+              const projectName = detailPayload.project?.name ?? summary.name;
+              const updatedAt = detailPayload.project?.updatedAt ?? summary.updatedAt;
+
+              return {
+                id: projectId,
+                name: projectName,
+                updatedAt,
+                state: sanitizeProjectState(detailPayload.state),
+              } satisfies ProjectRecord;
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        const detailById = new Map(
+          detailedProjects
+            .filter((project): project is ProjectRecord => Boolean(project))
+            .map((project) => [project.id, project]),
+        );
+        const normalizedFetched = summaries.map((summary) => {
+          const detailed = detailById.get(summary.id);
+          if (detailed) {
+            return detailed;
+          }
+
+          return {
+            id: summary.id,
+            name: summary.name,
+            updatedAt: summary.updatedAt,
+            state: createProjectDesignState(),
+          } satisfies ProjectRecord;
+        });
 
         if (controller.signal.aborted) {
           return;
