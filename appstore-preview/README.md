@@ -8,6 +8,41 @@
 `appstore-preview` is a browser-based composer for iPhone App Store preview assets.
 It is built with React + TypeScript + Tailwind + shadcn-style UI components and runs fully on the client (no backend required).
 
+## i18n Automation API
+
+This project now includes an optional local API server for i18n and batch automation.
+
+Base URL:
+- `http://localhost:4318/api`
+
+Run:
+
+```bash
+npm run api:dev
+```
+
+Main endpoints:
+- `GET /api/projects`
+  - List all projects visible to the API (`.project-saves/api-projects/*.json` + app save files)
+- `POST /api/projects/:projectId/clone`
+  - Clone an existing project
+- `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
+  - Update one text box (`text`, `width`, `fontSize`, `fontKey`, `color`, `x`, `y`)
+- `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
+  - Bulk update text boxes via `updates: [{ id, ...patch }]`
+- `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
+  - Text box meta including wrapped lines and `lineCount`
+- `GET /api/projects/:projectId/canvases/:canvasId/meta`
+  - Full canvas shape meta (background, iPhone frame, all text boxes)
+- `GET /api/projects/:projectId/meta`
+  - Full project shape meta for all canvases
+- `POST /api/projects/:projectId/export/zip`
+  - Export ZIP with project JSON, per-canvas meta/state, i18n text map, preview PNG
+
+Notes:
+- ZIP export includes media references but does not embed original media binaries.
+- The API can import/operate on saved project payloads using `POST /api/projects/import`.
+
 ## What This Project Is
 
 - A visual editor for App Store-style iPhone preview images/videos

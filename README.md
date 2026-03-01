@@ -27,6 +27,12 @@ What it provides:
 - Undo/Redo for editing and structural actions
 - Canvas-level export and full project ZIP export
 - Auto-save for project state and media mapping
+- Optional local API for i18n automation:
+  - project clone
+  - text box patch (single/bulk)
+  - text box line-wrap metadata
+  - full shape metadata
+  - ZIP export API
 
 Tech stack:
 - React 19
@@ -34,6 +40,7 @@ Tech stack:
 - Vite
 - Tailwind CSS 4
 - shadcn-style component setup
+- Node.js API module (`appstore-preview/api`)
 
 Docs:
 - [appstore-preview README](appstore-preview/README.md)

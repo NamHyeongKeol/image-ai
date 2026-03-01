@@ -7,9 +7,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "api:dev": "tsx api/src/server.ts",
+    "api:typecheck": "tsc -p api/tsconfig.json --noEmit",
+    "api:build": "tsc -p api/tsconfig.json"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.82",
     "@radix-ui/react-slot": "^1.2.4",
     "@tailwindcss/vite": "^4.2.1",
     "class-variance-authority": "^0.7.1",
@@ -31,6 +35,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "tsx": "^4.20.6",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^5.4.19"
