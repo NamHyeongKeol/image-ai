@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import {
+  centerCanvasElementsHorizontally,
   clamp,
   cloneCanvasState,
   cloneProjectDesignState,
@@ -15,6 +16,7 @@ import {
   normalizeProjectRecord,
   patchTextBox,
   sanitizeProjectState,
+  shrinkCanvasTextBoxesToSingleLineByCanvas,
   type ProjectDesignState,
   type StoredProjectRecord,
   type TextBoxModel,
@@ -384,6 +386,26 @@ function patchProjectTextBox(
   project.updatedAt = new Date().toISOString();
 }
 
+type CanvasLayoutAction = 'center-horizontal' | 'shrink-text-single-line';
+
+function readCanvasLayoutAction(body: JsonObject): CanvasLayoutAction {
+  const action = typeof body.action === 'string' ? body.action.trim() : '';
+  if (action === 'center-horizontal' || action === 'shrink-text-single-line') {
+    return action;
+  }
+  throw new HttpError(400, '"action" must be one of: center-horizontal, shrink-text-single-line');
+}
+
+function applyCanvasLayoutActionToState(
+  state: ReturnType<typeof cloneCanvasState>,
+  action: CanvasLayoutAction,
+) {
+  if (action === 'center-horizontal') {
+    return centerCanvasElementsHorizontally(state);
+  }
+  return shrinkCanvasTextBoxesToSingleLineByCanvas(state);
+}
+
 async function importProjectFromFile(filePathInput: string) {
   const resolvedFilePath = path.isAbsolute(filePathInput)
     ? filePathInput
@@ -530,6 +552,66 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (request.method === 'POST' && segments.length === 3 && segments[2] === 'actions') {
+    const body = await readJsonBody(request);
+    const action = readCanvasLayoutAction(body);
+    const projects = await listProjects();
+    let updatedProjects = 0;
+    let updatedCanvases = 0;
+    let skippedProjects = 0;
+    const failedProjects: Array<{ projectId: string; status: number; message: string }> = [];
+
+    for (const sourceProject of projects) {
+      try {
+        const editable = cloneAsEditableProject(sourceProject);
+        let projectChanged = false;
+        let projectChangedCanvases = 0;
+
+        editable.state.canvases = editable.state.canvases.map((canvas) => {
+          const nextState = applyCanvasLayoutActionToState(canvas.state, action);
+          const changed = JSON.stringify(nextState) !== JSON.stringify(canvas.state);
+          if (!changed) {
+            return canvas;
+          }
+          projectChanged = true;
+          projectChangedCanvases += 1;
+          return {
+            ...canvas,
+            state: nextState,
+          };
+        });
+
+        if (!projectChanged) {
+          skippedProjects += 1;
+          continue;
+        }
+
+        editable.updatedAt = new Date().toISOString();
+        await saveProject(editable, { expectedRevision: sourceProject.revision });
+        updatedProjects += 1;
+        updatedCanvases += projectChangedCanvases;
+      } catch (error) {
+        const payload = toErrorPayload(error);
+        failedProjects.push({
+          projectId: sourceProject.id,
+          status: payload.status,
+          message: payload.message,
+        });
+      }
+    }
+
+    sendJson(response, 200, {
+      action,
+      scope: 'all-projects',
+      totalProjects: projects.length,
+      updatedProjects,
+      updatedCanvases,
+      skippedProjects,
+      failedProjects,
+    });
+    return;
+  }
+
   const projectId = getParam(segments, 2, 'projectId');
 
   if (request.method === 'DELETE' && segments.length === 3) {
@@ -612,6 +694,41 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         copied: copiedMediaCount,
         missing: expectedMediaCopies - copiedMediaCount,
       },
+    });
+    return;
+  }
+
+  if (request.method === 'POST' && segments.length === 4 && segments[3] === 'actions') {
+    const body = await readJsonBody(request);
+    const action = readCanvasLayoutAction(body);
+    const editable = cloneAsEditableProject(project);
+    let changedCanvases = 0;
+
+    editable.state.canvases = editable.state.canvases.map((canvas) => {
+      const nextState = applyCanvasLayoutActionToState(canvas.state, action);
+      const changed = JSON.stringify(nextState) !== JSON.stringify(canvas.state);
+      if (!changed) {
+        return canvas;
+      }
+      changedCanvases += 1;
+      return {
+        ...canvas,
+        state: nextState,
+      };
+    });
+
+    const persisted =
+      changedCanvases > 0
+        ? await saveProject(editable, { expectedRevision: project.revision })
+        : project;
+
+    sendJson(response, 200, {
+      action,
+      scope: 'project',
+      project: toProjectSummary(persisted),
+      state: persisted.state,
+      updatedCanvases: changedCanvases,
+      changed: changedCanvases > 0,
     });
     return;
   }
@@ -749,6 +866,35 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       mediaCopied: mediaCloneResult.copied,
       mediaMeta: mediaCloneResult.meta,
       state: persistedTargetProject.state,
+    });
+    return;
+  }
+
+  if (request.method === 'POST' && segments.length === 6 && segments[5] === 'actions') {
+    const body = await readJsonBody(request);
+    const action = readCanvasLayoutAction(body);
+    const editable = cloneAsEditableProject(project);
+    const editableCanvas = resolveCanvasOrThrow(editable, canvasId);
+    const nextState = applyCanvasLayoutActionToState(editableCanvas.state, action);
+    const changed = JSON.stringify(nextState) !== JSON.stringify(editableCanvas.state);
+
+    if (changed) {
+      editableCanvas.state = nextState;
+      editable.updatedAt = new Date().toISOString();
+    }
+
+    const persisted = changed
+      ? await saveProject(editable, { expectedRevision: project.revision })
+      : project;
+    const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
+
+    sendJson(response, 200, {
+      action,
+      scope: 'canvas',
+      project: toProjectSummary(persisted),
+      canvasId,
+      changed,
+      canvasMeta: computeCanvasMeta(nextCanvas),
     });
     return;
   }

@@ -47,6 +47,15 @@ Main endpoints:
   - Clone an existing project (includes canvas media binaries stored by API)
 - `POST /api/projects/:projectId/canvases/:canvasId/clone`
   - Clone one canvas into the same project or another project (`targetProjectId`)
+- `POST /api/projects/:projectId/canvases/:canvasId/actions`
+  - Apply canvas-layout action to one canvas
+  - Body: `{ "action": "center-horizontal" | "shrink-text-single-line" }`
+  - `center-horizontal`: iPhone frame + all text boxes are centered on X axis (Y is unchanged)
+  - `shrink-text-single-line`: each text box width is reduced to the minimum single-line width using Canvas measurement
+- `POST /api/projects/:projectId/actions`
+  - Apply the same canvas-layout action to all canvases in one project
+- `POST /api/projects/actions`
+  - Apply the same canvas-layout action to all canvases in all projects
 - `PUT /api/projects/:projectId/canvases/:canvasId/media`
   - Upload/replace media binary for one canvas (`kind`, `name`, body=binary)
 - `GET /api/projects/:projectId/canvases/:canvasId/media`
@@ -125,6 +134,21 @@ curl -s -X PUT "http://localhost:4318/api/projects/<projectId>/canvases/<canvasI
 curl -s -X POST "http://localhost:4318/api/projects/<sourceProjectId>/canvases/<sourceCanvasId>/clone" \
   -H "Content-Type: application/json" \
   -d '{"targetProjectId":"<targetProjectId>","name":"Shot Copy"}'
+
+# center one canvas horizontally (phone + text boxes, X only)
+curl -s -X POST "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/actions" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"center-horizontal"}'
+
+# shrink text boxes to minimum single-line width (Canvas-based) for one project
+curl -s -X POST "http://localhost:4318/api/projects/<projectId>/actions" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"shrink-text-single-line"}'
+
+# apply horizontal centering to all projects
+curl -s -X POST "http://localhost:4318/api/projects/actions" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"center-horizontal"}'
 
 # move one text box
 curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId>/position" \

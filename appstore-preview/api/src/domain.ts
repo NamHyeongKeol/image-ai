@@ -358,6 +358,103 @@ export function wrapTextToLines(
   return lines.length > 0 ? lines : [""];
 }
 
+export function measureTextMetricsByCanvas(
+  box: Pick<TextBoxModel, "text" | "width" | "fontSize" | "fontKey">,
+) {
+  const fontFamily = getFontFamily(box.fontKey);
+  const fontSize = clamp(
+    box.fontSize,
+    TEXT_BOX_FONT_SIZE_MIN,
+    TEXT_BOX_FONT_SIZE_MAX,
+  );
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+
+  if (measureContext) {
+    measureContext.font = `800 ${fontSize}px ${fontFamily}`;
+  }
+  const lines = wrapTextToLines(measureContext, box.text, width);
+  const textWidth = lines.reduce(
+    (sum, line) => sum + measureTextWidth(measureContext, line),
+    0,
+  );
+
+  return {
+    lineCount: Math.max(1, lines.length),
+    textWidth: Math.max(0, textWidth),
+  };
+}
+
+export function computeSingleLineMinWidthByCanvas(
+  box: Pick<TextBoxModel, "text" | "fontSize" | "fontKey">,
+) {
+  const fontFamily = getFontFamily(box.fontKey);
+  const fontSize = clamp(
+    box.fontSize,
+    TEXT_BOX_FONT_SIZE_MIN,
+    TEXT_BOX_FONT_SIZE_MAX,
+  );
+  const textForSingleLine = box.text.replace(/\r\n/g, "\n").split("\n").join(" ");
+  if (!textForSingleLine.length) {
+    return TEXT_BOX_MIN_WIDTH;
+  }
+
+  if (measureContext) {
+    measureContext.font = `800 ${fontSize}px ${fontFamily}`;
+  }
+  const measured = measureTextWidth(measureContext, textForSingleLine);
+  return clamp(Math.ceil(measured + 1), TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+}
+
+export function centerCanvasElementsHorizontally(
+  state: CanvasDesignState,
+): CanvasDesignState {
+  const canvasSize = getCanvasDimensionsFromState(state);
+  const basePhone = getPhoneBaseMetrics(
+    canvasSize.width,
+    canvasSize.height,
+    state.phoneScale,
+  );
+  const targetPhoneX = (canvasSize.width - basePhone.width) / 2;
+
+  return {
+    ...state,
+    phoneOffset: {
+      x: targetPhoneX - basePhone.x,
+      y: state.phoneOffset.y,
+    },
+    textBoxes: state.textBoxes.map((box) => ({
+      ...box,
+      x: (canvasSize.width - clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH)) / 2,
+      y: box.y,
+    })),
+  };
+}
+
+export function shrinkCanvasTextBoxesToSingleLineByCanvas(
+  state: CanvasDesignState,
+): CanvasDesignState {
+  return {
+    ...state,
+    textBoxes: state.textBoxes.map((box) => {
+      const nextWidth = computeSingleLineMinWidthByCanvas(box);
+      const measured = measureTextMetricsByCanvas({
+        text: box.text,
+        width: nextWidth,
+        fontSize: box.fontSize,
+        fontKey: box.fontKey,
+      });
+      return {
+        ...box,
+        width: nextWidth,
+        measuredLineCountByCanvas: measured.lineCount,
+        measuredTextWidthByCanvas: measured.textWidth,
+        measuredLineCountByDom: null,
+        measuredTextWidthByDom: null,
+      };
+    }),
+  };
+}
+
 export function computeTextBoxMeta(box: TextBoxModel): TextBoxMeta {
   const fontFamily = getFontFamily(box.fontKey);
   const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
