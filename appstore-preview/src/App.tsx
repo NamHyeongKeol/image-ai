@@ -1513,6 +1513,17 @@ function App() {
     [currentCanvasId, currentProjectCanvases],
   );
 
+  const missingThumbnailCanvasIdsSignature = useMemo(() => {
+    if (!currentProject) {
+      return '';
+    }
+
+    return currentProject.state.canvases
+      .filter((canvas) => !canvas.thumbnailDataUrl)
+      .map((canvas) => canvas.id)
+      .join(',');
+  }, [currentProject]);
+
   useEffect(() => {
     const existingCanvasIds = new Set(currentProjectCanvases.map((canvas) => canvas.id));
     setCanvasNameDrafts((previous) => {
@@ -2868,6 +2879,134 @@ function App() {
     applyProjectState(targetProject);
     void restoreProjectMedia(targetProject);
   }, [applyProjectState, currentProjectId, projects, restoreProjectMedia]);
+
+  useEffect(() => {
+    if (!currentProject || !missingThumbnailCanvasIdsSignature) {
+      return;
+    }
+
+    let cancelled = false;
+    const targetProjectId = currentProject.id;
+    const canvasesSnapshot = currentProject.state.canvases.map((canvas) => ({
+      ...canvas,
+      state: cloneCanvasState(canvas.state),
+    }));
+
+    void (async () => {
+      const nextThumbnails = new Map<string, string>();
+
+      for (let index = 0; index < canvasesSnapshot.length; index += 1) {
+        if (cancelled) {
+          return;
+        }
+
+        const canvas = canvasesSnapshot[index];
+        if (!canvas || canvas.thumbnailDataUrl) {
+          continue;
+        }
+
+        let objectUrl: string | null = null;
+        let mediaElement: HTMLImageElement | HTMLVideoElement | null = null;
+
+        try {
+          if (typeof indexedDB !== 'undefined' && canvas.state.media.kind) {
+            const mediaKey = buildProjectCanvasMediaKey(targetProjectId, canvas.id);
+            let mediaRecord = await readProjectMediaRecord(mediaKey);
+            const firstCanvasId = canvasesSnapshot[0]?.id ?? '';
+            if (!mediaRecord && canvas.id === firstCanvasId) {
+              mediaRecord = await readProjectMediaRecord(targetProjectId);
+            }
+
+            if (mediaRecord) {
+              objectUrl = URL.createObjectURL(mediaRecord.blob);
+              if (mediaRecord.kind === 'image') {
+                mediaElement = await new Promise<HTMLImageElement>((resolve, reject) => {
+                  const instance = new Image();
+                  instance.onload = () => resolve(instance);
+                  instance.onerror = () => reject(new Error('썸네일 이미지 로드 실패'));
+                  instance.src = objectUrl as string;
+                });
+              } else {
+                mediaElement = await new Promise<HTMLVideoElement>((resolve, reject) => {
+                  const instance = document.createElement('video');
+                  instance.preload = 'auto';
+                  instance.playsInline = true;
+                  instance.muted = true;
+                  instance.loop = false;
+                  instance.src = objectUrl as string;
+
+                  const onLoadedData = () => resolve(instance);
+                  const onError = () => reject(new Error('썸네일 영상 로드 실패'));
+                  instance.addEventListener('loadeddata', onLoadedData, { once: true });
+                  instance.addEventListener('error', onError, { once: true });
+                });
+              }
+            }
+          }
+
+          if (cancelled) {
+            return;
+          }
+
+          const thumbnailDataUrl = createCanvasThumbnailDataUrl(canvas.state, mediaElement);
+          if (thumbnailDataUrl) {
+            nextThumbnails.set(canvas.id, thumbnailDataUrl);
+          }
+        } catch {
+          // Ignore per-canvas failure and continue with remaining canvases.
+        } finally {
+          if (mediaElement instanceof HTMLVideoElement) {
+            mediaElement.pause();
+          }
+          if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+          }
+        }
+      }
+
+      if (cancelled || nextThumbnails.size === 0) {
+        return;
+      }
+
+      setProjects((previous) =>
+        previous.map((project) => {
+          if (project.id !== targetProjectId) {
+            return project;
+          }
+
+          let changed = false;
+          const canvases = project.state.canvases.map((canvas) => {
+            const nextThumbnail = nextThumbnails.get(canvas.id);
+            if (!nextThumbnail || canvas.thumbnailDataUrl === nextThumbnail) {
+              return canvas;
+            }
+
+            changed = true;
+            return {
+              ...canvas,
+              thumbnailDataUrl: nextThumbnail,
+            };
+          });
+
+          if (!changed) {
+            return project;
+          }
+
+          return {
+            ...project,
+            state: {
+              ...project.state,
+              canvases,
+            },
+          };
+        }),
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject, missingThumbnailCanvasIdsSignature]);
 
   useEffect(() => {
     if (apiHydrationAttemptedRef.current) {
