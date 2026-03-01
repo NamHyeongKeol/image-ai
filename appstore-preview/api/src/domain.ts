@@ -286,6 +286,65 @@ function measureTextWidth(ctx: MeasureContext | null, text: string) {
   return ctx.measureText(text).width;
 }
 
+type SegmentedPart = {
+  segment: string;
+};
+
+type SegmenterLike = {
+  segment: (input: string) => Iterable<SegmentedPart>;
+};
+
+const intlWithSegmenter = Intl as typeof Intl & {
+  Segmenter?: new (
+    locales?: string | string[],
+    options?: { granularity: "grapheme" | "word" | "sentence" },
+  ) => SegmenterLike;
+};
+
+const wordSegmenter: SegmenterLike | null = intlWithSegmenter.Segmenter
+  ? new intlWithSegmenter.Segmenter(undefined, { granularity: "word" })
+  : null;
+
+const graphemeSegmenter: SegmenterLike | null = intlWithSegmenter.Segmenter
+  ? new intlWithSegmenter.Segmenter(undefined, { granularity: "grapheme" })
+  : null;
+
+function segmentByWords(text: string) {
+  if (text.length === 0) {
+    return [] as string[];
+  }
+
+  if (!wordSegmenter) {
+    return text.split(/(\s+)/u).filter((segment) => segment.length > 0);
+  }
+
+  const segments: string[] = [];
+  for (const part of wordSegmenter.segment(text)) {
+    if (part.segment.length > 0) {
+      segments.push(part.segment);
+    }
+  }
+  return segments.length > 0 ? segments : [text];
+}
+
+function segmentByGraphemes(text: string) {
+  if (text.length === 0) {
+    return [] as string[];
+  }
+
+  if (!graphemeSegmenter) {
+    return Array.from(text);
+  }
+
+  const segments: string[] = [];
+  for (const part of graphemeSegmenter.segment(text)) {
+    if (part.segment.length > 0) {
+      segments.push(part.segment);
+    }
+  }
+  return segments.length > 0 ? segments : Array.from(text);
+}
+
 export function wrapTextToLines(
   ctx: MeasureContext | null,
   text: string,
@@ -300,42 +359,58 @@ export function wrapTextToLines(
       continue;
     }
 
-    const words = paragraph.split(" ");
     let current = "";
 
-    for (const word of words) {
-      const candidate = current ? `${current} ${word}` : word;
+    for (const rawSegment of segmentByWords(paragraph)) {
+      const segment = current.length === 0 ? rawSegment.trimStart() : rawSegment;
+      if (segment.length === 0) {
+        continue;
+      }
+
+      const candidate = `${current}${segment}`;
       if (measureTextWidth(ctx, candidate) <= maxWidth) {
         current = candidate;
         continue;
       }
 
-      if (current) {
-        lines.push(current);
+      if (current.trim().length > 0) {
+        lines.push(current.trimEnd());
       }
 
-      if (measureTextWidth(ctx, word) <= maxWidth) {
-        current = word;
+      const overflow = segment.trimStart();
+      if (overflow.length === 0) {
+        current = "";
+        continue;
+      }
+
+      if (measureTextWidth(ctx, overflow) <= maxWidth) {
+        current = overflow;
         continue;
       }
 
       let fragment = "";
-      for (const char of word) {
-        const charCandidate = `${fragment}${char}`;
+      for (const graphemeRaw of segmentByGraphemes(overflow)) {
+        const grapheme =
+          fragment.length === 0 ? graphemeRaw.trimStart() : graphemeRaw;
+        if (grapheme.length === 0) {
+          continue;
+        }
+
+        const charCandidate = `${fragment}${grapheme}`;
         if (measureTextWidth(ctx, charCandidate) <= maxWidth) {
           fragment = charCandidate;
         } else {
-          if (fragment.length > 0) {
-            lines.push(fragment);
+          if (fragment.trim().length > 0) {
+            lines.push(fragment.trimEnd());
           }
-          fragment = char;
+          fragment = grapheme;
         }
       }
       current = fragment;
     }
 
-    if (current) {
-      lines.push(current);
+    if (current.trim().length > 0) {
+      lines.push(current.trimEnd());
     }
   }
 
