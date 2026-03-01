@@ -36,7 +36,7 @@ npm run api:dev
 
 Main endpoints:
 - `GET /api/projects`
-  - List all projects visible to the API (`.project-saves/api-projects/*.json` + app save files)
+  - List all projects visible to the API (`.project-saves/*.appstore-preview-project.json`)
 - `POST /api/projects/:projectId/clone`
   - Clone an existing project
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`

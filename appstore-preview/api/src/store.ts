@@ -1,11 +1,13 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   cloneProjectDesignState,
   createProjectDesignState,
   createProjectRecord,
+  getCanvasPresetById,
   normalizeProjectRecord,
+  sanitizeFileNameSegment,
   type ProjectDesignState,
   type StoredProjectRecord,
 } from './domain.js';
@@ -14,7 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const APPSTORE_PREVIEW_ROOT = path.resolve(__dirname, '../..');
 export const PROJECT_SAVES_DIR = path.join(APPSTORE_PREVIEW_ROOT, '.project-saves');
-export const API_PROJECTS_DIR = path.join(PROJECT_SAVES_DIR, 'api-projects');
+const LEGACY_API_PROJECTS_DIR = path.join(PROJECT_SAVES_DIR, 'api-projects');
+const PROJECT_FILE_EXTENSION = '.appstore-preview-project.json';
 
 export class ProjectNotFoundError extends Error {
   constructor(projectId: string) {
@@ -23,17 +26,22 @@ export class ProjectNotFoundError extends Error {
   }
 }
 
-interface ApiProjectPersisted {
-  version: 1;
-  id: string;
-  name: string;
-  updatedAt: string;
+interface ProjectFilePayload {
+  version: number;
+  project: {
+    id: string;
+    name: string;
+    updatedAt: string;
+  };
+  canvas: {
+    width: number;
+    height: number;
+  };
   state: ProjectDesignState;
 }
 
 async function ensureDirectories() {
   await mkdir(PROJECT_SAVES_DIR, { recursive: true });
-  await mkdir(API_PROJECTS_DIR, { recursive: true });
 }
 
 async function tryReadJsonFile(filePath: string) {
@@ -45,50 +53,90 @@ async function tryReadJsonFile(filePath: string) {
   }
 }
 
-function toApiProjectPath(projectId: string) {
-  return path.join(API_PROJECTS_DIR, `${projectId}.json`);
+function parseIsoTimestamp(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function createUnifiedProjectFilePath(project: { id: string; name: string }) {
+  const safeName = sanitizeFileNameSegment(project.name);
+  return path.join(PROJECT_SAVES_DIR, `${safeName}-${project.id}${PROJECT_FILE_EXTENSION}`);
+}
+
+async function listProjectFilePaths(baseDir: string) {
+  const result: string[] = [];
+  try {
+    const entries = await readdir(baseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(PROJECT_FILE_EXTENSION)) {
+        continue;
+      }
+      result.push(path.join(baseDir, entry.name));
+    }
+  } catch {
+    // ignore
+  }
+  return result;
+}
+
+async function listLegacyJsonPaths() {
+  const result: string[] = [];
+  try {
+    const entries = await readdir(LEGACY_API_PROJECTS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue;
+      }
+      result.push(path.join(LEGACY_API_PROJECTS_DIR, entry.name));
+    }
+  } catch {
+    // ignore
+  }
+  return result;
+}
+
+async function loadProjectsFromPaths(paths: string[], source: 'api' | 'app-save') {
+  const loaded: StoredProjectRecord[] = [];
+  for (const sourcePath of paths) {
+    const value = await tryReadJsonFile(sourcePath);
+    const normalized = normalizeProjectRecord(value, source, sourcePath);
+    if (!normalized) {
+      continue;
+    }
+    loaded.push(normalized);
+  }
+  return loaded;
+}
+
+function mergeProjectsByLatest(projects: StoredProjectRecord[]) {
+  const byId = new Map<string, StoredProjectRecord>();
+  for (const project of projects) {
+    const existing = byId.get(project.id);
+    if (!existing) {
+      byId.set(project.id, project);
+      continue;
+    }
+
+    const existingTs = parseIsoTimestamp(existing.updatedAt);
+    const nextTs = parseIsoTimestamp(project.updatedAt);
+    if (nextTs >= existingTs) {
+      byId.set(project.id, project);
+    }
+  }
+
+  return Array.from(byId.values()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 export async function listProjects() {
   await ensureDirectories();
 
-  const byId = new Map<string, StoredProjectRecord>();
+  const unifiedPaths = await listProjectFilePaths(PROJECT_SAVES_DIR);
+  const unifiedProjects = await loadProjectsFromPaths(unifiedPaths, 'api');
 
-  const apiEntries = await readdir(API_PROJECTS_DIR, { withFileTypes: true });
-  for (const entry of apiEntries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) {
-      continue;
-    }
+  const legacyPaths = await listLegacyJsonPaths();
+  const legacyProjects = await loadProjectsFromPaths(legacyPaths, 'api');
 
-    const sourcePath = path.join(API_PROJECTS_DIR, entry.name);
-    const value = await tryReadJsonFile(sourcePath);
-    const normalized = normalizeProjectRecord(value, 'api', sourcePath);
-    if (!normalized) {
-      continue;
-    }
-
-    byId.set(normalized.id, normalized);
-  }
-
-  const appSaveEntries = await readdir(PROJECT_SAVES_DIR, { withFileTypes: true });
-  for (const entry of appSaveEntries) {
-    if (!entry.isFile() || !entry.name.endsWith('.appstore-preview-project.json')) {
-      continue;
-    }
-
-    const sourcePath = path.join(PROJECT_SAVES_DIR, entry.name);
-    const value = await tryReadJsonFile(sourcePath);
-    const normalized = normalizeProjectRecord(value, 'app-save', sourcePath);
-    if (!normalized) {
-      continue;
-    }
-
-    if (!byId.has(normalized.id)) {
-      byId.set(normalized.id, normalized);
-    }
-  }
-
-  return Array.from(byId.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return mergeProjectsByLatest([...unifiedProjects, ...legacyProjects]);
 }
 
 export async function getProjectOrNull(projectId: string) {
@@ -104,25 +152,63 @@ export async function getProjectOrThrow(projectId: string) {
   return project;
 }
 
+async function findExistingProjectPath(projectId: string) {
+  const projects = await listProjects();
+  const existing = projects.find((project) => project.id === projectId);
+  return existing?.sourcePath ?? null;
+}
+
 export async function saveProject(project: StoredProjectRecord) {
   await ensureDirectories();
 
-  const persisted: ApiProjectPersisted = {
-    version: 1,
-    id: project.id,
-    name: project.name,
-    updatedAt: project.updatedAt,
-    state: cloneProjectDesignState(project.state),
+  const persistedState = cloneProjectDesignState(project.state);
+  const activeCanvas =
+    persistedState.canvases.find((canvas) => canvas.id === persistedState.currentCanvasId) ??
+    persistedState.canvases[0];
+  const activePreset = getCanvasPresetById(activeCanvas?.state.canvasPresetId ?? '886x1920');
+
+  const updatedAt = project.updatedAt || new Date().toISOString();
+  const payload: ProjectFilePayload = {
+    version: 2,
+    project: {
+      id: project.id,
+      name: project.name,
+      updatedAt,
+    },
+    canvas: {
+      width: activePreset.width,
+      height: activePreset.height,
+    },
+    state: persistedState,
   };
 
-  const targetPath = toApiProjectPath(project.id);
-  await writeFile(targetPath, `${JSON.stringify(persisted, null, 2)}\n`, 'utf8');
+  const existingPath = await findExistingProjectPath(project.id);
+  const legacyPath =
+    existingPath && path.resolve(existingPath).startsWith(path.resolve(LEGACY_API_PROJECTS_DIR))
+      ? existingPath
+      : null;
+  const targetPath = createUnifiedProjectFilePath(project);
+  const staleUnifiedPath =
+    existingPath && !legacyPath && path.resolve(existingPath) !== path.resolve(targetPath)
+      ? existingPath
+      : null;
+
+  await writeFile(targetPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+
+  if (legacyPath) {
+    await rm(legacyPath, { force: true });
+  }
+
+  if (staleUnifiedPath) {
+    await rm(staleUnifiedPath, { force: true });
+  }
 
   return {
     ...project,
     source: 'api' as const,
     sourcePath: targetPath,
-    state: cloneProjectDesignState(project.state),
+    updatedAt,
+    state: persistedState,
   };
 }
 
