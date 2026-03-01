@@ -46,6 +46,7 @@ interface ProjectFilePayload {
   project: {
     id: string;
     name: string;
+    createdAt?: string;
     updatedAt: string;
     revision?: number;
   };
@@ -144,7 +145,21 @@ function mergeProjectsByLatest(projects: StoredProjectRecord[]) {
     }
   }
 
-  return Array.from(byId.values()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return Array.from(byId.values()).sort((left, right) => {
+    const leftCreatedAtTs = parseIsoTimestamp(left.createdAt);
+    const rightCreatedAtTs = parseIsoTimestamp(right.createdAt);
+    if (leftCreatedAtTs !== rightCreatedAtTs) {
+      return leftCreatedAtTs - rightCreatedAtTs;
+    }
+
+    const leftUpdatedAtTs = parseIsoTimestamp(left.updatedAt);
+    const rightUpdatedAtTs = parseIsoTimestamp(right.updatedAt);
+    if (leftUpdatedAtTs !== rightUpdatedAtTs) {
+      return leftUpdatedAtTs - rightUpdatedAtTs;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
 }
 
 export async function listProjects() {
@@ -214,11 +229,13 @@ export async function saveProject(project: StoredProjectRecord, options?: SavePr
   const updatedAt = hasMeaningfulChange
     ? project.updatedAt || new Date().toISOString()
     : existingRecord?.updatedAt || project.updatedAt || new Date().toISOString();
+  const createdAt = existingRecord?.createdAt || project.createdAt || updatedAt;
   const payload: ProjectFilePayload = {
     version: 3,
     project: {
       id: project.id,
       name: project.name,
+      createdAt,
       updatedAt,
       revision: nextRevision,
     },
@@ -257,6 +274,7 @@ export async function saveProject(project: StoredProjectRecord, options?: SavePr
     ...project,
     source: 'api' as const,
     sourcePath: targetPath,
+    createdAt,
     updatedAt,
     revision: nextRevision,
     state: persistedState,

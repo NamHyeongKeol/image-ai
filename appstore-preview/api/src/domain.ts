@@ -81,6 +81,7 @@ export type {
 export interface StoredProjectRecord {
   id: string;
   name: string;
+  createdAt: string;
   updatedAt: string;
   revision: number;
   state: ProjectDesignState;
@@ -93,6 +94,7 @@ export interface ProjectFilePayload {
   project: {
     id: string;
     name: string;
+    createdAt?: string;
     updatedAt: string;
     revision?: number;
   };
@@ -200,10 +202,12 @@ export function createProjectRecord(
   name: string,
   state: ProjectDesignState = createProjectDesignState(),
 ): StoredProjectRecord {
+  const now = new Date().toISOString();
   return {
     id: createProjectId(),
     name,
-    updatedAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
     revision: 0,
     state: cloneProjectDesignState(state),
     source: "api",
@@ -248,9 +252,11 @@ export function normalizeProjectRecord(
       project?: {
         id?: unknown;
         name?: unknown;
+        createdAt?: unknown;
         updatedAt?: unknown;
         revision?: unknown;
       };
+      createdAt?: unknown;
       revision?: unknown;
     };
 
@@ -261,6 +267,10 @@ export function normalizeProjectRecord(
       raw.project.updatedAt,
       new Date().toISOString(),
     );
+    const createdAt = safeString(
+      raw.project.createdAt,
+      updatedAt,
+    );
     const revision = safeInteger(raw.project.revision, 0);
     if (!id || !name) {
       return null;
@@ -269,6 +279,7 @@ export function normalizeProjectRecord(
     return {
       id,
       name,
+      createdAt,
       updatedAt,
       revision,
       state: sanitizeProjectState(raw.state),
@@ -280,6 +291,7 @@ export function normalizeProjectRecord(
   const id = safeString(raw.id);
   const name = safeString(raw.name);
   const updatedAt = safeString(raw.updatedAt, new Date().toISOString());
+  const createdAt = safeString(raw.createdAt, updatedAt);
   const revision = safeInteger(raw.revision, 0);
   if (!id || !name) {
     return null;
@@ -288,6 +300,7 @@ export function normalizeProjectRecord(
   return {
     id,
     name,
+    createdAt,
     updatedAt,
     revision,
     state: sanitizeProjectState(raw.state),
@@ -730,6 +743,7 @@ export function cloneProjectForApi(
   return {
     id: createProjectId(),
     name: nextName?.trim() || `${source.name} Copy`,
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     revision: 0,
     state: duplicatedState,

@@ -39,6 +39,8 @@ Main endpoints:
 
 - `GET /api/projects`
   - List all projects visible to the API (`.project-saves/*.appstore-preview-project.json`)
+  - Stable ordering: creation order (oldest first), not `updatedAt` order
+  - Each summary includes both `createdAt` and `updatedAt`
 - `GET /api/projects/:projectId`
   - Read one project (`project` summary with `revision` + `state`)
 - `GET /api/projects/full`

@@ -101,6 +101,7 @@ function toProjectSummary(project: StoredProjectRecord) {
   return {
     id: project.id,
     name: project.name,
+    createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     revision: project.revision,
     canvasCount: project.state.canvases.length,
@@ -352,6 +353,7 @@ function cloneAsEditableProject(project: StoredProjectRecord): StoredProjectReco
     ...project,
     source: 'api',
     sourcePath: '',
+    createdAt: project.createdAt,
     updatedAt: new Date().toISOString(),
     revision: project.revision,
     state: cloneProjectDesignState(project.state),

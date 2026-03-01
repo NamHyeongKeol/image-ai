@@ -3555,10 +3555,10 @@ function App() {
           throw new Error('No projects available from API storage.');
         }
 
-        const sortedSummaries = [...summaries].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+        const orderedSummaries = [...summaries];
         const preferredSummaryId =
-          sortedSummaries.find((project) => project.id === legacyStore.currentProjectId)?.id ?? sortedSummaries[0].id;
-        const summaryProjects = sortedSummaries.map((summary) => ({
+          orderedSummaries.find((project) => project.id === legacyStore.currentProjectId)?.id ?? orderedSummaries[0].id;
+        const summaryProjects = orderedSummaries.map((summary) => ({
           id: summary.id,
           name: summary.name,
           updatedAt: summary.updatedAt,
@@ -3617,7 +3617,7 @@ function App() {
 
         const normalizedDetailed = detailedProjects.filter((project): project is ProjectRecord => Boolean(project));
         const detailById = new Map(normalizedDetailed.map((project) => [project.id, project]));
-        const mergedProjects = sortedSummaries.map((summary) => {
+        const mergedProjects = orderedSummaries.map((summary) => {
           const detailed = detailById.get(summary.id);
           if (detailed) {
             return detailed;
