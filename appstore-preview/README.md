@@ -59,8 +59,12 @@ Main endpoints:
   - Full read dump for one project (`state` + `metas` + `rawFile`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
   - Update one text box (`text`, `width`, `fontSize`, `fontKey`, `color`, `x`, `y`)
+- `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/position`
+  - Move one text box position only (`x`, `y`)
 - `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
   - Bulk update text boxes via `updates: [{ id, ...patch }]`
+- `PATCH /api/projects/:projectId/canvases/:canvasId/phone`
+  - Move/scale iPhone frame (`x`, `y`, `phoneScale` or `offset: { x, y }`)
 - `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
   - Text box meta including wrapped lines and `lineCount`
 - `GET /api/projects/:projectId/canvases/:canvasId/meta`
@@ -106,6 +110,16 @@ curl -s -X PUT "http://localhost:4318/api/projects/<projectId>/canvases/<canvasI
 curl -s -X POST "http://localhost:4318/api/projects/<sourceProjectId>/canvases/<sourceCanvasId>/clone" \
   -H "Content-Type: application/json" \
   -d '{"targetProjectId":"<targetProjectId>","name":"Shot Copy"}'
+
+# move one text box
+curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId>/position" \
+  -H "Content-Type: application/json" \
+  -d '{"x":312,"y":260}'
+
+# move/scale iPhone frame
+curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/phone" \
+  -H "Content-Type: application/json" \
+  -d '{"x":24,"y":-30,"phoneScale":1.08}'
 ```
 
 ## What This Project Is

@@ -83,13 +83,16 @@ Common flow:
 7. Delete project: `DELETE /api/projects/:projectId`
 8. Update translated text boxes:
    - single: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
+   - position only: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/position`
    - bulk: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
-9. Verify wrapping/line metadata:
+9. Move/scale iPhone frame:
+   - `PATCH /api/projects/:projectId/canvases/:canvasId/phone`
+10. Verify wrapping/line metadata:
    - text box meta: `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
-10. Verify full shape metadata:
+11. Verify full shape metadata:
    - canvas meta: `GET /api/projects/:projectId/canvases/:canvasId/meta`
    - project meta: `GET /api/projects/:projectId/meta`
-11. Export as ZIP: `POST /api/projects/:projectId/export/zip`
+12. Export as ZIP: `POST /api/projects/:projectId/export/zip`
 
 Example requests:
 
@@ -129,18 +132,28 @@ curl -s -X PATCH http://localhost:4318/api/projects/<projectId>/canvases/<canvas
   -H "Content-Type: application/json" \
   -d '{"text":"새 번역 문구","width":540,"fontSize":64}'
 
-# 10) patch multiple text boxes
+# 10) move one text box
+curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId>/position" \
+  -H "Content-Type: application/json" \
+  -d '{"x":312,"y":260}'
+
+# 11) patch multiple text boxes
 curl -s -X PATCH http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes \
   -H "Content-Type: application/json" \
   -d '{"updates":[{"id":"text-1","text":"문구 A","width":520},{"id":"text-2","text":"문구 B","fontSize":56}]}'
 
-# 11) line-wrap/meta check
+# 12) move/scale iPhone frame
+curl -s -X PATCH "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/phone" \
+  -H "Content-Type: application/json" \
+  -d '{"x":24,"y":-30,"phoneScale":1.08}'
+
+# 13) line-wrap/meta check
 curl -s http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId>/meta
 
-# 12) full project meta
+# 14) full project meta
 curl -s http://localhost:4318/api/projects/<projectId>/meta
 
-# 13) zip export
+# 15) zip export
 curl -L -X POST http://localhost:4318/api/projects/<projectId>/export/zip \
   -H "Content-Type: application/json" \
   -d '{"includePngPreview":true}' \

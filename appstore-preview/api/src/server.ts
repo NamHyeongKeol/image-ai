@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import {
+  clamp,
   cloneCanvasState,
   cloneProjectDesignState,
   cloneProjectForApi,
@@ -325,6 +326,10 @@ function createDuplicateCanvasName(existingNames: string[], sourceName: string) 
   return `${baseName} Copy ${index}`;
 }
 
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function notFound() {
   throw new HttpError(404, 'API route not found.');
 }
@@ -639,6 +644,44 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (request.method === 'PATCH' && segments.length === 6 && segments[5] === 'phone') {
+    const body = await readJsonBody(request);
+    const offsetPatch = ensureJsonObject(body.offset);
+    const x = readNumber(body.x) ?? readNumber(offsetPatch.x);
+    const y = readNumber(body.y) ?? readNumber(offsetPatch.y);
+    const phoneScale = readNumber(body.phoneScale) ?? readNumber(body.scale);
+
+    if (x === null && y === null && phoneScale === null) {
+      throw new HttpError(400, 'At least one of x, y, phoneScale (or offset.x/offset.y) is required.');
+    }
+
+    const editable = cloneAsEditableProject(project);
+    const editableCanvas = resolveCanvasOrThrow(editable, canvasId);
+
+    editableCanvas.state.phoneOffset = {
+      x: x ?? editableCanvas.state.phoneOffset.x,
+      y: y ?? editableCanvas.state.phoneOffset.y,
+    };
+    if (phoneScale !== null) {
+      editableCanvas.state.phoneScale = clamp(phoneScale, 0.1, 3);
+    }
+
+    editable.updatedAt = new Date().toISOString();
+    const persisted = await saveProject(editable);
+    const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
+
+    sendJson(response, 200, {
+      project: toProjectSummary(persisted),
+      canvasId,
+      phone: {
+        offset: nextCanvas.state.phoneOffset,
+        scale: nextCanvas.state.phoneScale,
+      },
+      canvasMeta: computeCanvasMeta(nextCanvas),
+    });
+    return;
+  }
+
   if (request.method === 'POST' && segments.length === 6 && segments[5] === 'clone') {
     const body = await readJsonBody(request);
     const targetProjectId = typeof body.targetProjectId === 'string' && body.targetProjectId.trim()
@@ -826,6 +869,32 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
     if (segments.length >= 7) {
       const textBoxId = getParam(segments, 6, 'textBoxId');
+
+      if (request.method === 'PATCH' && segments.length === 8 && segments[7] === 'position') {
+        const body = await readJsonBody(request);
+        const x = readNumber(body.x);
+        const y = readNumber(body.y);
+        if (x === null && y === null) {
+          throw new HttpError(400, 'At least one of x or y is required.');
+        }
+
+        const editable = cloneAsEditableProject(project);
+        patchProjectTextBox(editable, canvasId, textBoxId, {
+          ...(x !== null ? { x } : {}),
+          ...(y !== null ? { y } : {}),
+        });
+        const persisted = await saveProject(editable);
+        const nextCanvas = resolveCanvasOrThrow(persisted, canvasId);
+        const textBoxMeta = computeCanvasMeta(nextCanvas).textBoxes.find((item) => item.id === textBoxId) ?? null;
+
+        sendJson(response, 200, {
+          project: toProjectSummary(persisted),
+          canvasId,
+          textBoxId,
+          textBoxMeta,
+        });
+        return;
+      }
 
       if (request.method === 'PATCH' && segments.length === 7) {
         const body = await readJsonBody(request);
