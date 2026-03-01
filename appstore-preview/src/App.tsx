@@ -1371,6 +1371,7 @@ function App() {
   const isApplyingHistoryRef = useRef(false);
   const apiHydrationAttemptedRef = useRef(false);
   const apiHydrationCompletedRef = useRef(false);
+  const lastCanvasPreloadSignatureRef = useRef('');
 
   const [projects, setProjects] = useState<ProjectRecord[]>(initialProjectStore.projects);
   const [currentProjectId, setCurrentProjectId] = useState(initialProject.id);
@@ -1513,15 +1514,14 @@ function App() {
     [currentCanvasId, currentProjectCanvases],
   );
 
-  const missingThumbnailCanvasIdsSignature = useMemo(() => {
+  const canvasThumbnailPreloadSignature = useMemo(() => {
     if (!currentProject) {
       return '';
     }
 
-    return currentProject.state.canvases
-      .filter((canvas) => !canvas.thumbnailDataUrl)
-      .map((canvas) => canvas.id)
-      .join(',');
+    return `${currentProject.id}|${currentProject.state.canvases
+      .map((canvas) => `${canvas.id}:${canvas.state.media.kind ?? 'none'}:${canvas.state.media.name}`)
+      .join('|')}`;
   }, [currentProject]);
 
   useEffect(() => {
@@ -1840,10 +1840,11 @@ function App() {
             : project,
         ),
       );
+      clearLoadedMedia();
       setCurrentProjectId(nextProject.id);
       setCurrentCanvasId(nextProject.state.currentCanvasId);
     },
-    [currentProjectId, currentProjectState, projects],
+    [clearLoadedMedia, currentProjectId, currentProjectState, projects],
   );
 
   const handleCreateProject = useCallback(() => {
@@ -2055,10 +2056,11 @@ function App() {
       setProjects((previous) =>
         previous.map((project) => (project.id === currentProject.id ? nextProject : project)),
       );
+      clearLoadedMedia();
       applyProjectState(nextProject, nextCanvasId);
       void restoreProjectMedia(nextProject, nextCanvasId);
     },
-    [applyProjectState, currentCanvasId, currentProject, currentProjectState, restoreProjectMedia],
+    [applyProjectState, clearLoadedMedia, currentCanvasId, currentProject, currentProjectState, restoreProjectMedia],
   );
 
   const handleRenameCanvasDraftChange = useCallback((targetCanvasId: string, nextName: string) => {
@@ -2876,14 +2878,20 @@ function App() {
     }
 
     loadedProjectIdRef.current = currentProjectId;
+    clearLoadedMedia();
     applyProjectState(targetProject);
     void restoreProjectMedia(targetProject);
-  }, [applyProjectState, currentProjectId, projects, restoreProjectMedia]);
+  }, [applyProjectState, clearLoadedMedia, currentProjectId, projects, restoreProjectMedia]);
 
   useEffect(() => {
-    if (!currentProject || !missingThumbnailCanvasIdsSignature) {
+    if (!currentProject || !canvasThumbnailPreloadSignature) {
       return;
     }
+
+    if (lastCanvasPreloadSignatureRef.current === canvasThumbnailPreloadSignature) {
+      return;
+    }
+    lastCanvasPreloadSignatureRef.current = canvasThumbnailPreloadSignature;
 
     let cancelled = false;
     const targetProjectId = currentProject.id;
@@ -2901,7 +2909,7 @@ function App() {
         }
 
         const canvas = canvasesSnapshot[index];
-        if (!canvas || canvas.thumbnailDataUrl) {
+        if (!canvas) {
           continue;
         }
 
@@ -3006,7 +3014,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentProject, missingThumbnailCanvasIdsSignature]);
+  }, [canvasThumbnailPreloadSignature, currentProject]);
 
   useEffect(() => {
     if (apiHydrationAttemptedRef.current) {
@@ -3174,8 +3182,18 @@ function App() {
     }
 
     const timer = window.setTimeout(() => {
+      const canUseLoadedMedia =
+        currentCanvasState.media.kind !== null &&
+        currentCanvasState.media.kind === assetKind &&
+        currentCanvasState.media.name === assetName;
       const media =
-        assetKind === 'video' ? videoRef.current : assetKind === 'image' ? imageRef.current : null;
+        canUseLoadedMedia
+          ? assetKind === 'video'
+            ? videoRef.current
+            : assetKind === 'image'
+              ? imageRef.current
+              : null
+          : null;
       const thumbnailDataUrl = createCanvasThumbnailDataUrl(currentCanvasState, media);
       if (!thumbnailDataUrl) {
         return;
@@ -3219,7 +3237,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [assetKind, assetUrl, currentCanvasId, currentCanvasState, currentProjectId]);
+  }, [assetKind, assetName, assetUrl, currentCanvasId, currentCanvasState, currentProjectId]);
 
   useEffect(() => {
     const snapshot = buildAppHistorySnapshot();
