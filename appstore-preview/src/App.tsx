@@ -781,6 +781,89 @@ function measureTextBoxBounds(box: TextBoxModel): Rect {
   };
 }
 
+type DomTextMeasureContext = {
+  host: HTMLDivElement;
+  textNode: Text;
+  range: Range;
+};
+
+let domTextMeasureContext: DomTextMeasureContext | null = null;
+
+function getDomTextMeasureContext(): DomTextMeasureContext | null {
+  if (typeof document === 'undefined' || !document.body) {
+    return null;
+  }
+
+  if (domTextMeasureContext) {
+    return domTextMeasureContext;
+  }
+
+  const host = document.createElement('div');
+  host.setAttribute('data-appstore-preview-text-measure', 'true');
+  host.style.position = 'fixed';
+  host.style.left = '-100000px';
+  host.style.top = '0';
+  host.style.visibility = 'hidden';
+  host.style.pointerEvents = 'none';
+  host.style.zIndex = '-1';
+  host.style.margin = '0';
+  host.style.padding = '0';
+  host.style.border = '0';
+  host.style.boxSizing = 'border-box';
+  host.style.whiteSpace = 'pre-wrap';
+  host.style.overflowWrap = 'anywhere';
+  host.style.wordBreak = 'break-word';
+
+  const textNode = document.createTextNode('');
+  host.appendChild(textNode);
+  document.body.appendChild(host);
+
+  const range = document.createRange();
+  range.selectNodeContents(textNode);
+  domTextMeasureContext = { host, textNode, range };
+  return domTextMeasureContext;
+}
+
+function measureWrappedTextWidthByDom(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): number | null {
+  const context = getDomTextMeasureContext();
+  if (!context) {
+    return null;
+  }
+
+  const { host, textNode, range } = context;
+  const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
+  const fontSize = clamp(box.fontSize, TEXT_BOX_FONT_SIZE_MIN, TEXT_BOX_FONT_SIZE_MAX);
+  const fontFamily = getFontFamily(box.fontKey);
+
+  host.style.width = `${width}px`;
+  host.style.fontFamily = fontFamily;
+  host.style.fontSize = `${fontSize}px`;
+  host.style.fontWeight = '800';
+  host.style.lineHeight = '1.2';
+  textNode.nodeValue = box.text;
+  range.selectNodeContents(textNode);
+
+  const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+  if (rects.length === 0) {
+    return 0;
+  }
+
+  // Group fragments by visual line and sum each line width.
+  const lineRects: Array<{ top: number; left: number; right: number }> = [];
+  for (const rect of rects) {
+    const existing = lineRects.find((line) => Math.abs(line.top - rect.top) < 1);
+    if (!existing) {
+      lineRects.push({ top: rect.top, left: rect.left, right: rect.right });
+      continue;
+    }
+
+    existing.left = Math.min(existing.left, rect.left);
+    existing.right = Math.max(existing.right, rect.right);
+  }
+
+  return lineRects.reduce((sum, line) => sum + Math.max(0, line.right - line.left), 0);
+}
+
 function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize' | 'fontKey'>): {
   lineCount: number;
   textWidth: number;
@@ -800,8 +883,11 @@ function measureTextMetrics(box: Pick<TextBoxModel, 'text' | 'width' | 'fontSize
   const width = clamp(box.width, TEXT_BOX_MIN_WIDTH, TEXT_BOX_MAX_WIDTH);
   ctx.font = `800 ${fontSize}px ${fontFamily}`;
   const lines = wrapTextToLines(ctx, box.text, width);
-  // Sum measured width of each wrapped line.
-  const textWidth = lines.reduce((sum, line) => sum + ctx.measureText(line).width, 0);
+  const domMeasuredTextWidth = measureWrappedTextWidthByDom(box);
+  const textWidth =
+    typeof domMeasuredTextWidth === 'number' && Number.isFinite(domMeasuredTextWidth)
+      ? Math.max(0, domMeasuredTextWidth)
+      : lines.reduce((sum, line) => sum + ctx.measureText(line).width, 0);
   return { lineCount: lines.length, textWidth };
 }
 
@@ -2564,7 +2650,7 @@ function App() {
       previous.map((box) => {
         if (box.id !== selectedTextBoxId) return box;
         const next = updater(box);
-        // text/width/fontSize 변경 시 브라우저 canvas로 즉시 실측
+        // text/width/fontSize 변경 시 브라우저 실측값 즉시 갱신
         const contentChanged =
           next.text !== box.text ||
           next.width !== box.width ||
