@@ -11,6 +11,7 @@ import {
   type ProjectDesignState,
   type StoredProjectRecord,
 } from './domain.js';
+import { deleteProjectMediaByProjectId } from './media-store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -242,6 +243,8 @@ export async function deleteProjectById(projectId: string) {
   if (removedCount === 0) {
     throw new ProjectNotFoundError(projectId);
   }
+
+  await deleteProjectMediaByProjectId(projectId);
 
   return removedCount;
 }

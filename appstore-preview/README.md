@@ -6,7 +6,7 @@
 ![Canvas List Overview](docs/screenshots/canvas-list-overview.png)
 
 `appstore-preview` is a browser-based composer for iPhone App Store preview assets.
-It is built with React + TypeScript + Tailwind + shadcn-style UI components and runs fully on the client (no backend required).
+It is built with React + TypeScript + Tailwind + shadcn-style UI components, with an optional local API server for automation.
 
 ## i18n Automation API
 
@@ -42,7 +42,17 @@ Main endpoints:
 - `GET /api/projects/full`
   - Full read dump for all local projects (`state` + `metas` + `rawFile`)
 - `POST /api/projects/:projectId/clone`
-  - Clone an existing project
+  - Clone an existing project (includes canvas media binaries stored by API)
+- `POST /api/projects/:projectId/canvases/:canvasId/clone`
+  - Clone one canvas into the same project or another project (`targetProjectId`)
+- `PUT /api/projects/:projectId/canvases/:canvasId/media`
+  - Upload/replace media binary for one canvas (`kind`, `name`, body=binary)
+- `GET /api/projects/:projectId/canvases/:canvasId/media`
+  - Download media binary for one canvas
+- `GET /api/projects/:projectId/canvases/:canvasId/media/meta`
+  - Read stored media metadata for one canvas
+- `DELETE /api/projects/:projectId/canvases/:canvasId/media`
+  - Delete stored media binary and clear canvas media state
 - `DELETE /api/projects/:projectId`
   - Delete one project from API storage
 - `GET /api/projects/:projectId/full`
@@ -62,6 +72,7 @@ Main endpoints:
 
 Notes:
 - ZIP export includes media references but does not embed original media binaries.
+- API media binaries are stored under `.project-saves/media/<projectId>/<canvasId>/`.
 - The API can import/operate on saved project payloads using `POST /api/projects/import`.
 - When running `npm run dev`, the GUI auto-loads API projects on startup and auto-syncs project changes back to API.
 - Project SoT is the API file storage (`.project-saves/*.appstore-preview-project.json`) for both GUI and API reads/writes.
@@ -85,6 +96,16 @@ curl -s "http://localhost:4318/api/projects/full?includeMeta=true&includeRawFile
 
 # read full dump for one project (skip raw file if not needed)
 curl -s "http://localhost:4318/api/projects/<projectId>/full?includeMeta=true&includeRawFile=false"
+
+# upload canvas media binary (image example)
+curl -s -X PUT "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/media?kind=image&name=shot-01.png" \
+  -H "Content-Type: image/png" \
+  --data-binary "@./shot-01.png"
+
+# clone one canvas into another project (binary media included if stored by API)
+curl -s -X POST "http://localhost:4318/api/projects/<sourceProjectId>/canvases/<sourceCanvasId>/clone" \
+  -H "Content-Type: application/json" \
+  -d '{"targetProjectId":"<targetProjectId>","name":"Shot Copy"}'
 ```
 
 ## What This Project Is

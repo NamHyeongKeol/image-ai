@@ -28,7 +28,9 @@ What it provides:
 - Canvas-level export and full project ZIP export
 - Auto-save for project state and media mapping
 - Optional local API for i18n automation:
-  - project clone
+  - project clone (with API-stored media binary copy)
+  - canvas clone (within same project or cross-project)
+  - canvas media binary upload/read/delete
   - text box patch (single/bulk)
   - text box line-wrap metadata
   - full shape metadata
@@ -75,17 +77,19 @@ Common flow:
 1. List projects: `GET /api/projects`
 2. Read one project: `GET /api/projects/:projectId`
 3. Read full local dump (all projects): `GET /api/projects/full`
-4. Clone project: `POST /api/projects/:projectId/clone`
-5. Delete project: `DELETE /api/projects/:projectId`
-6. Update translated text boxes:
+4. Upload canvas media binary: `PUT /api/projects/:projectId/canvases/:canvasId/media`
+5. Clone project: `POST /api/projects/:projectId/clone`
+6. Clone canvas: `POST /api/projects/:projectId/canvases/:canvasId/clone`
+7. Delete project: `DELETE /api/projects/:projectId`
+8. Update translated text boxes:
    - single: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId`
    - bulk: `PATCH /api/projects/:projectId/canvases/:canvasId/text-boxes`
-7. Verify wrapping/line metadata:
+9. Verify wrapping/line metadata:
    - text box meta: `GET /api/projects/:projectId/canvases/:canvasId/text-boxes/:textBoxId/meta`
-8. Verify full shape metadata:
+10. Verify full shape metadata:
    - canvas meta: `GET /api/projects/:projectId/canvases/:canvasId/meta`
    - project meta: `GET /api/projects/:projectId/meta`
-9. Export as ZIP: `POST /api/projects/:projectId/export/zip`
+11. Export as ZIP: `POST /api/projects/:projectId/export/zip`
 
 Example requests:
 
@@ -98,35 +102,45 @@ curl -s -X POST http://localhost:4318/api/projects/<projectId>/clone \
   -H "Content-Type: application/json" \
   -d '{"name":"Korean i18n Copy"}'
 
-# 3) read one project
+# 3) upload media binary to one canvas
+curl -s -X PUT "http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/media?kind=image&name=shot-01.png" \
+  -H "Content-Type: image/png" \
+  --data-binary "@./shot-01.png"
+
+# 4) canvas clone (cross-project)
+curl -s -X POST "http://localhost:4318/api/projects/<sourceProjectId>/canvases/<sourceCanvasId>/clone" \
+  -H "Content-Type: application/json" \
+  -d '{"targetProjectId":"<targetProjectId>","name":"Shot Copy"}'
+
+# 5) read one project
 curl -s http://localhost:4318/api/projects/<projectId>
 
-# 4) full read (all local projects)
+# 6) full read (all local projects)
 curl -s "http://localhost:4318/api/projects/full?includeMeta=true&includeRawFile=true"
 
-# 5) full read (one project)
+# 7) full read (one project)
 curl -s "http://localhost:4318/api/projects/<projectId>/full?includeMeta=true&includeRawFile=false"
 
-# 6) delete project
+# 8) delete project
 curl -s -X DELETE http://localhost:4318/api/projects/<projectId>
 
-# 7) patch one text box
+# 9) patch one text box
 curl -s -X PATCH http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId> \
   -H "Content-Type: application/json" \
   -d '{"text":"새 번역 문구","width":540,"fontSize":64}'
 
-# 8) patch multiple text boxes
+# 10) patch multiple text boxes
 curl -s -X PATCH http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes \
   -H "Content-Type: application/json" \
   -d '{"updates":[{"id":"text-1","text":"문구 A","width":520},{"id":"text-2","text":"문구 B","fontSize":56}]}'
 
-# 9) line-wrap/meta check
+# 11) line-wrap/meta check
 curl -s http://localhost:4318/api/projects/<projectId>/canvases/<canvasId>/text-boxes/<textBoxId>/meta
 
-# 10) full project meta
+# 12) full project meta
 curl -s http://localhost:4318/api/projects/<projectId>/meta
 
-# 11) zip export
+# 13) zip export
 curl -L -X POST http://localhost:4318/api/projects/<projectId>/export/zip \
   -H "Content-Type: application/json" \
   -d '{"includePngPreview":true}' \

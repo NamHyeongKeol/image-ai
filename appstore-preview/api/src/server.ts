@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import {
+  cloneCanvasState,
   cloneProjectDesignState,
   cloneProjectForApi,
   computeCanvasMeta,
+  createCanvasId,
   createProjectDesignState,
   DEFAULT_CANVAS_PRESET,
   findCanvas,
@@ -27,6 +29,13 @@ import {
   saveProject,
 } from './store.js';
 import { buildProjectZip } from './zip.js';
+import {
+  cloneCanvasMedia,
+  deleteCanvasMedia,
+  readCanvasMedia,
+  readCanvasMediaMeta,
+  saveCanvasMedia,
+} from './media-store.js';
 
 class HttpError extends Error {
   status: number;
@@ -44,8 +53,15 @@ interface JsonObject {
 
 function setCorsHeaders(response: ServerResponse) {
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  response.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, X-AppStore-Preview-Media-Name, X-AppStore-Preview-Media-Kind',
+  );
+  response.setHeader(
+    'Access-Control-Expose-Headers',
+    'Content-Disposition, X-AppStore-Preview-Media-Kind, X-AppStore-Preview-Media-Name',
+  );
 }
 
 function sendJson(response: ServerResponse, status: number, payload: JsonObject) {
@@ -232,6 +248,81 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonObject> {
   } catch {
     throw new HttpError(400, 'Invalid JSON body.');
   }
+}
+
+async function readBinaryBody(request: IncomingMessage, maxBytes = 1024 * 1024 * 1024): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalLength = 0;
+
+  for await (const chunk of request) {
+    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalLength += bufferChunk.length;
+    if (totalLength > maxBytes) {
+      throw new HttpError(413, `Request body is too large (max ${Math.floor(maxBytes / (1024 * 1024))}MB).`);
+    }
+    chunks.push(bufferChunk);
+  }
+
+  if (chunks.length === 0) {
+    throw new HttpError(400, 'Binary request body is required.');
+  }
+
+  return Buffer.concat(chunks);
+}
+
+function resolveMediaKindFromHeaders(url: URL, request: IncomingMessage): 'image' | 'video' | null {
+  const queryKind = url.searchParams.get('kind');
+  if (queryKind === 'image' || queryKind === 'video') {
+    return queryKind;
+  }
+
+  const headerKind = request.headers['x-appstore-preview-media-kind'];
+  if (typeof headerKind === 'string') {
+    const normalized = headerKind.trim().toLowerCase();
+    if (normalized === 'image' || normalized === 'video') {
+      return normalized;
+    }
+  }
+
+  const contentType = typeof request.headers['content-type'] === 'string' ? request.headers['content-type'] : '';
+  if (contentType.startsWith('image/')) {
+    return 'image';
+  }
+  if (contentType.startsWith('video/')) {
+    return 'video';
+  }
+
+  return null;
+}
+
+function resolveMediaName(url: URL, request: IncomingMessage, fallbackCanvasId: string, kind: 'image' | 'video') {
+  const queryName = url.searchParams.get('name');
+  if (queryName && queryName.trim()) {
+    return queryName.trim();
+  }
+
+  const headerName = request.headers['x-appstore-preview-media-name'];
+  if (typeof headerName === 'string' && headerName.trim()) {
+    return headerName.trim();
+  }
+
+  return `${fallbackCanvasId}.${kind === 'image' ? 'png' : 'mp4'}`;
+}
+
+function createDuplicateCanvasName(existingNames: string[], sourceName: string) {
+  const existing = new Set(existingNames);
+  const baseName = sourceName.trim() || 'Canvas';
+  const firstCandidate = `${baseName} Copy`;
+  if (!existing.has(firstCandidate)) {
+    return firstCandidate;
+  }
+
+  let index = 2;
+  while (existing.has(`${baseName} Copy ${index}`)) {
+    index += 1;
+  }
+
+  return `${baseName} Copy ${index}`;
 }
 
 function notFound() {
@@ -470,10 +561,37 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     const nextName = typeof body.name === 'string' ? body.name : undefined;
     const cloned = cloneProjectForApi(project, nextName);
     const persisted = await saveProject(cloned);
+    let expectedMediaCopies = 0;
+    let copiedMediaCount = 0;
+
+    for (let index = 0; index < project.state.canvases.length; index += 1) {
+      const sourceCanvas = project.state.canvases[index];
+      const targetCanvas = persisted.state.canvases[index];
+      if (!sourceCanvas || !targetCanvas || !sourceCanvas.state.media.kind) {
+        continue;
+      }
+
+      expectedMediaCopies += 1;
+      const result = await cloneCanvasMedia({
+        sourceProjectId: project.id,
+        sourceCanvasId: sourceCanvas.id,
+        targetProjectId: persisted.id,
+        targetCanvasId: targetCanvas.id,
+      });
+      if (result.copied) {
+        copiedMediaCount += 1;
+      }
+    }
+
     sendJson(response, 201, {
       clonedFrom: project.id,
       project: toProjectSummary(persisted),
       state: persisted.state,
+      mediaCopy: {
+        expected: expectedMediaCopies,
+        copied: copiedMediaCount,
+        missing: expectedMediaCopies - copiedMediaCount,
+      },
     });
     return;
   }
@@ -519,6 +637,142 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       canvasMeta: computeCanvasMeta(canvas),
     });
     return;
+  }
+
+  if (request.method === 'POST' && segments.length === 6 && segments[5] === 'clone') {
+    const body = await readJsonBody(request);
+    const targetProjectId = typeof body.targetProjectId === 'string' && body.targetProjectId.trim()
+      ? body.targetProjectId.trim()
+      : project.id;
+    const requestedName = typeof body.name === 'string' ? body.name.trim() : '';
+    const requestedInsertIndex = typeof body.insertIndex === 'number' ? Math.floor(body.insertIndex) : null;
+    const makeCurrent = body.makeCurrent !== false;
+
+    const targetProjectSource = targetProjectId === project.id ? project : await getProjectOrThrow(targetProjectId);
+    const editableTargetProject = cloneAsEditableProject(targetProjectSource);
+    const targetExistingNames = editableTargetProject.state.canvases.map((item) => item.name);
+    const nextCanvasName = requestedName || createDuplicateCanvasName(targetExistingNames, canvas.name);
+    const duplicatedCanvasId = createCanvasId();
+    const clonedCanvas = {
+      id: duplicatedCanvasId,
+      name: nextCanvasName,
+      state: cloneCanvasState(canvas.state),
+      thumbnailDataUrl: canvas.thumbnailDataUrl,
+    };
+
+    const clampedInsertIndex =
+      requestedInsertIndex === null
+        ? editableTargetProject.state.canvases.length
+        : Math.max(0, Math.min(requestedInsertIndex, editableTargetProject.state.canvases.length));
+    editableTargetProject.state.canvases.splice(clampedInsertIndex, 0, clonedCanvas);
+    if (makeCurrent) {
+      editableTargetProject.state.currentCanvasId = clonedCanvas.id;
+    }
+    editableTargetProject.updatedAt = new Date().toISOString();
+
+    const persistedTargetProject = await saveProject(editableTargetProject);
+    const mediaCloneResult = await cloneCanvasMedia({
+      sourceProjectId: project.id,
+      sourceCanvasId: canvas.id,
+      targetProjectId: persistedTargetProject.id,
+      targetCanvasId: clonedCanvas.id,
+    });
+
+    sendJson(response, 201, {
+      clonedFrom: {
+        projectId: project.id,
+        canvasId: canvas.id,
+      },
+      project: toProjectSummary(persistedTargetProject),
+      targetCanvasId: clonedCanvas.id,
+      targetCanvasName: clonedCanvas.name,
+      mediaCopied: mediaCloneResult.copied,
+      mediaMeta: mediaCloneResult.meta,
+      state: persistedTargetProject.state,
+    });
+    return;
+  }
+
+  if (segments.length >= 6 && segments[5] === 'media') {
+    if (request.method === 'GET' && segments.length === 7 && segments[6] === 'meta') {
+      const mediaMeta = await readCanvasMediaMeta(project.id, canvasId);
+      sendJson(response, 200, {
+        project: toProjectSummary(project),
+        canvasId,
+        media: mediaMeta,
+      });
+      return;
+    }
+
+    if (request.method === 'GET' && segments.length === 6) {
+      const media = await readCanvasMedia(project.id, canvasId);
+      if (!media) {
+        throw new HttpError(404, `Canvas media not found: ${canvasId}`);
+      }
+
+      sendBinary(response, 200, media.meta.type || 'application/octet-stream', media.meta.name || `${canvasId}.bin`, media.data, {
+        'X-AppStore-Preview-Media-Kind': media.meta.kind,
+        'X-AppStore-Preview-Media-Name': media.meta.name,
+      });
+      return;
+    }
+
+    if (request.method === 'PUT' && segments.length === 6) {
+      const contentTypeHeader = request.headers['content-type'];
+      const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
+      const mediaKind = resolveMediaKindFromHeaders(url, request);
+      if (!mediaKind) {
+        throw new HttpError(
+          400,
+          'Could not infer media kind. Provide kind=image|video query (or header) and a valid media content type.',
+        );
+      }
+
+      const mediaData = await readBinaryBody(request);
+      const mediaName = resolveMediaName(url, request, canvasId, mediaKind);
+      const mediaType = contentType || (mediaKind === 'image' ? 'image/png' : 'video/mp4');
+      const mediaMeta = await saveCanvasMedia(project.id, canvasId, {
+        kind: mediaKind,
+        name: mediaName,
+        type: mediaType,
+        data: mediaData,
+      });
+
+      const editable = cloneAsEditableProject(project);
+      const editableCanvas = resolveCanvasOrThrow(editable, canvasId);
+      editableCanvas.state.media = {
+        kind: mediaKind,
+        name: mediaName,
+      };
+      editable.updatedAt = new Date().toISOString();
+      const persisted = await saveProject(editable);
+
+      sendJson(response, 200, {
+        project: toProjectSummary(persisted),
+        canvasId,
+        media: mediaMeta,
+      });
+      return;
+    }
+
+    if (request.method === 'DELETE' && segments.length === 6) {
+      const editable = cloneAsEditableProject(project);
+      const editableCanvas = resolveCanvasOrThrow(editable, canvasId);
+      editableCanvas.state.media = {
+        kind: null,
+        name: '',
+      };
+      editable.updatedAt = new Date().toISOString();
+      const persisted = await saveProject(editable);
+      await deleteCanvasMedia(project.id, canvasId);
+
+      sendJson(response, 200, {
+        project: toProjectSummary(persisted),
+        canvasId,
+        deleted: true,
+      });
+      return;
+    }
   }
 
   if (segments.length >= 6 && segments[5] === 'text-boxes') {
